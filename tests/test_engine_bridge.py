@@ -205,7 +205,7 @@ class _Answering:
     def __init__(self, answer, meanwhile=lambda: None):
         self.answer, self.meanwhile = answer, meanwhile
 
-    def run(self, name, args, project_json, project_file, token):
+    def run(self, name, args, project_json, project_file, token, timeout=None):
         self.meanwhile()
         return self.answer
 
@@ -288,3 +288,44 @@ def test_discard_does_not_follow_a_symlink_out_of_the_assets_folder(tmp_path):
     bridged._discard([os.path.join(assets, "title", "generated.svg"), inside], project_file)
     assert (outside / "generated.svg").exists()
     assert not os.path.exists(inside)
+
+
+def test_the_deadline_grows_with_the_timeline_within_a_floor_and_a_ceiling(monkeypatch):
+    from classes import engine_bridge
+
+    monkeypatch.delenv("ZENVI_ENGINE_BRIDGE_TIMEOUT", raising=False)
+    floor = engine_bridge.DEFAULT_TIMEOUT_SECONDS
+    assert engine_bridge.deadline(0) == floor
+    assert engine_bridge.deadline(5) == floor
+    assert engine_bridge.deadline(648) > engine_bridge.deadline(60) >= floor
+    assert engine_bridge.deadline(10 * 3600) == engine_bridge.MAX_TIMEOUT_SECONDS
+    monkeypatch.setenv("ZENVI_ENGINE_BRIDGE_TIMEOUT", "7")
+    assert engine_bridge.deadline(0) == engine_bridge.deadline(648) == 7
+
+
+def test_a_call_gets_the_deadline_of_its_timeline(bridge, monkeypatch):
+    from classes import engine_bridge
+    from classes.editor_tools import engine_bridge as bridged
+
+    monkeypatch.delenv("ZENVI_ENGINE_BRIDGE_TIMEOUT", raising=False)
+    seen = []
+    client = engine_bridge.get_client()
+    monkeypatch.setattr(client, "run", lambda *a, timeout=None, **k: seen.append(timeout) or {"ok": True, "text": "{}"})
+    for end in (60.0, 648.0):
+        data = {"clips": [{"id": "A", "position": 2.0, "start": 10.0, "end": 10.0 + end}]}
+        monkeypatch.setattr(bridged, "_snapshot", lambda data=data: (bridge.store.current_filepath, 1, data))
+        bridged.run_tool("add_motion_template_tool", {})
+    assert seen == [engine_bridge.deadline(62.0), engine_bridge.deadline(650.0)]
+
+
+@pytest.mark.parametrize("mode", ["server", "oneshot"])
+def test_a_timeout_names_the_tool_and_the_seconds_and_the_next_call_works(mode):
+    from classes import engine_bridge
+
+    client = engine_bridge.EngineBridgeClient(sys.executable, FAKE, mode, timeout=30)
+    try:
+        with pytest.raises(engine_bridge.BridgeUnavailable, match=r"add_motion_template_tool .*timed out after 2 s"):
+            client.run("add_motion_template_tool", {"template": "hang"}, "{}", "/tmp/x.zvn", timeout=2)
+        assert client.run("add_motion_template_tool", {"template": "nope"}, "{}", "/tmp/x.zvn")["ok"] is False
+    finally:
+        client.close()

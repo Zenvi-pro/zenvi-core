@@ -48,6 +48,9 @@ from classes.logger import log
 # The bridge protocol this desktop speaks (zenvi-web packages/cli/src/bridge/run.ts BRIDGE_PROTOCOL).
 PROTOCOL = 2
 DEFAULT_TIMEOUT_SECONDS = 120.0
+# A run's deadline grows with the timeline it works over (mastering, mixing, renders), up to this.
+SECONDS_PER_MEDIA_SECOND = 2.0
+MAX_TIMEOUT_SECONDS = 3600.0
 CATALOG_TIMEOUT_SECONDS = 30.0
 # zenvi-web package.json "engines".
 MIN_NODE_MAJOR = 22
@@ -290,6 +293,13 @@ def _timeout(env=None) -> float:
         return DEFAULT_TIMEOUT_SECONDS
 
 
+def deadline(media_seconds: float, env=None) -> float:
+    """Seconds a run over *media_seconds* of timeline may take; ``ZENVI_ENGINE_BRIDGE_TIMEOUT`` wins."""
+    if "ZENVI_ENGINE_BRIDGE_TIMEOUT" in _env(env):
+        return _timeout(env)
+    return min(MAX_TIMEOUT_SECONDS, max(DEFAULT_TIMEOUT_SECONDS, SECONDS_PER_MEDIA_SECOND * media_seconds))
+
+
 class EngineBridgeClient:
     """Runs engine tools through the CLI. Thread-safe; calls are serialized."""
 
@@ -317,17 +327,21 @@ class EngineBridgeClient:
         return tools
 
     def run(self, tool: str, args: dict, project_json: str, project_file: str,
-            backend_token: Optional[str] = None) -> dict:
-        """Run *tool* on the project (its JSON text as the desktop holds it). Returns the bridge answer."""
+            backend_token: Optional[str] = None, timeout: Optional[float] = None) -> dict:
+        """Run *tool* on the project (its JSON text as the desktop holds it). Returns the bridge answer.
+
+        *timeout* (default the client's) bounds this run; the CLI is stopped when it passes.
+        """
+        timeout = self.timeout if timeout is None else timeout
         with self._lock:
             if self.mode == "oneshot":
-                return self._run_tool_once(tool, args, project_json, project_file, backend_token)
+                return self._run_tool_once(tool, args, project_json, project_file, backend_token, timeout)
             params = {"tool": tool, "args": args or {}, "project_file": project_file}
             if backend_token:
                 params["backend_token"] = backend_token
             # Splice the project text in as is: no second encode of a large project.
             head = json.dumps(params)[:-1]
-            return self._request("run", head + ', "project": ' + project_json + "}")
+            return self._request("run", head + ', "project": ' + project_json + "}", tool, timeout)
 
     def close(self) -> None:
         with self._lock:
@@ -345,7 +359,7 @@ class EngineBridgeClient:
             raise BridgeUnavailable(f"could not start the zenvi CLI: {exc}") from exc
         threading.Thread(target=self._drain_stderr, args=(self._proc,), daemon=True,
                          name="engine-bridge-stderr").start()
-        hello = self._exchange(self._proc, "hello", None)
+        hello = self._exchange(self._proc, "hello", None, "hello", self.timeout)
         if hello.get("protocol") != PROTOCOL:
             self._stop()
             raise BridgeUnavailable(
@@ -368,22 +382,28 @@ class EngineBridgeClient:
         except Exception:
             log.debug("zenvi bridge did not stop cleanly", exc_info=True)
 
-    def _request(self, method: str, params_json: Optional[str]) -> dict:
+    def _request(self, method: str, params_json: Optional[str], what: str, timeout: float) -> dict:
         proc = self._start()
         try:
-            return self._exchange(proc, method, params_json)
+            return self._exchange(proc, method, params_json, what, timeout)
         except BridgeUnavailable:
             # A crashed or hung process is not reused; the next call starts a new one.
             self._stop()
             raise
 
-    def _exchange(self, proc, method: str, params_json: Optional[str]) -> dict:
+    def _exchange(self, proc, method: str, params_json: Optional[str], what: str, timeout: float) -> dict:
         self._next_id += 1
         rid = self._next_id
         line = '{"jsonrpc": "2.0", "id": %d, "method": %s' % (rid, json.dumps(method))
         line += (', "params": ' + params_json + "}\n") if params_json else "}\n"
         # A hung call is killed: readline then returns b"" and the call fails.
-        watchdog = threading.Timer(self.timeout, proc.kill)
+        timed_out = threading.Event()
+
+        def kill():
+            timed_out.set()
+            proc.kill()
+
+        watchdog = threading.Timer(timeout, kill)
         watchdog.daemon = True
         watchdog.start()
         try:
@@ -395,7 +415,9 @@ class EngineBridgeClient:
         finally:
             watchdog.cancel()
         if not raw:
-            raise BridgeUnavailable("the zenvi CLI stopped or timed out")
+            if timed_out.is_set():
+                raise BridgeUnavailable(_timed_out(what, timeout))
+            raise BridgeUnavailable("the zenvi CLI stopped")
         try:
             message = json.loads(raw)
         except ValueError as exc:
@@ -407,10 +429,12 @@ class EngineBridgeClient:
         return message.get("result") or {}
 
     # -- one-shot mode --------------------------------------------------------
-    def _run_once(self, argv: list, timeout: float, env=None) -> dict:
+    def _run_once(self, argv: list, timeout: float, env=None, what: str = "the call") -> dict:
         try:
             done = subprocess.run([self.node, self.cli, *argv], capture_output=True, timeout=timeout, env=env)
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired as exc:
+            raise BridgeUnavailable(_timed_out(what, timeout)) from exc
+        except OSError as exc:
             raise BridgeUnavailable(f"the zenvi CLI did not answer: {exc}") from exc
         try:
             return json.loads(done.stdout)
@@ -418,7 +442,7 @@ class EngineBridgeClient:
             err = done.stderr.decode("utf-8", "replace").strip()[-300:]
             raise BridgeUnavailable(f"the zenvi CLI failed (exit {done.returncode}): {err}") from exc
 
-    def _run_tool_once(self, tool, args, project_json, project_file, backend_token) -> dict:
+    def _run_tool_once(self, tool, args, project_json, project_file, backend_token, timeout) -> dict:
         folder = tempfile.mkdtemp(prefix="zenvi-bridge-")
         try:
             snapshot = os.path.join(folder, "project.json")
@@ -429,9 +453,14 @@ class EngineBridgeClient:
                 env["ZENVI_BACKEND_TOKEN"] = backend_token
             return self._run_once(
                 ["tool-run", tool, "--args", json.dumps(args or {}), "--snapshot", snapshot,
-                 "--project-file", project_file], self.timeout, env=env)
+                 "--project-file", project_file], timeout, env=env, what=tool)
         finally:
             shutil.rmtree(folder, ignore_errors=True)
+
+
+def _timed_out(what: str, timeout: float) -> str:
+    return (f"{what} timed out after {timeout:.0f} s in the zenvi CLI and was stopped "
+            "(set ZENVI_ENGINE_BRIDGE_TIMEOUT to allow longer)")
 
 
 _client: Optional[EngineBridgeClient] = None
