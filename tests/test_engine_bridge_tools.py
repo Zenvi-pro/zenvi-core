@@ -341,6 +341,9 @@ def test_the_cli_is_the_named_one_else_the_bundled_one(tmp_path, monkeypatch):
     bundled = tmp_path / "app" / "engine" / "zenvi.mjs"
     bundled.parent.mkdir(parents=True)
     bundled.write_text("//")
+    # An install the user made (from a source) is what runs; the CLI the app ships is the fallback.
+    assert engine_bridge.find_cli({}) == str(user_copy)
+    runtime.write_text(json.dumps({"cli": {"protocol": engine_bridge.PROTOCOL - 1}}))
     assert engine_bridge.find_cli({}) == str(bundled)
     # A path the user names is the one they mean: no quiet fallback when it is wrong.
     with pytest.raises(engine_bridge.BridgeUnavailable, match="not at"):

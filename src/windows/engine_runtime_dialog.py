@@ -125,6 +125,8 @@ class EngineRuntimeDialog(QDialog):
         _ = get_app()._tr
         self._status = status
         source = status.get("source") or ""
+        # The app ships the CLI: installing only fetches Node, no source needed.
+        bundled = bool(status.get("bundled")) and not source
         if status.get("ready"):
             where = _("installed") if status.get("managed") else _("from %s") % status.get("cli")
             text = _("Ready: zenvi CLI %(version)s (%(where)s, bridge protocol %(protocol)s) on Node.js "
@@ -137,7 +139,8 @@ class EngineRuntimeDialog(QDialog):
             if status.get("node_needed"):
                 parts.append(_("Node.js %(version)s (about %(mb)d MB, from nodejs.org)") % {
                     "version": engine_runtime.NODE_VERSION, "mb": engine_runtime.NODE_DOWNLOAD_MB})
-            parts.append(_("the zenvi CLI from %s") % (source or _("(no source set)")))
+            if not bundled:
+                parts.append(_("the zenvi CLI from %s") % (source or _("(no source set)")))
             if status.get("outdated"):
                 text = _("The installed zenvi CLI does not speak this Zenvi's bridge protocol (%(protocol)s): "
                          "update it. Updating downloads %(what)s into %(home)s.")
@@ -147,14 +150,14 @@ class EngineRuntimeDialog(QDialog):
                 self._install_btn.setText(_("Download and Install"))
             text = text % {"what": _(" and ").join(parts), "home": status.get("home"),
                            "protocol": status.get("protocol")}
-        if not source:
+        if not source and not bundled:
             text += "\n\n" + _("Set Preferences > AI > Zenvi Engine Tools Source to a release manifest URL or to "
                                "a zenvi CLI build folder (zenvi-web packages/cli/dist) to install or update.")
         if engine_bridge.bridge_setting() == "off":
             text += "\n\n" + _("Engine tools are turned off (Preferences > AI > Zenvi Engine Tools): installed "
                                "or not, none is listed until that is turned back on.")
         self._label.setText(text)
-        self._install_btn.setEnabled(bool(source))
+        self._install_btn.setEnabled(bool(source) or (bundled and not status.get("ready")))
         self._fit()
 
     # -- install --------------------------------------------------------------
@@ -208,7 +211,8 @@ class EngineRuntimeDialog(QDialog):
         self._progress_text.setText(message)
         self._progress_text.show()
         self._fit()
-        self._install_btn.setEnabled(bool(self._status.get("source")) or not self._status)
+        self._install_btn.setEnabled(bool(self._status.get("source") or self._status.get("bundled"))
+                                     or not self._status)
 
     def _fit(self) -> None:
         # Wrapped labels report no useful minimum height: size them for their text, the dialog follows.
