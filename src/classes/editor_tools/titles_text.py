@@ -213,20 +213,33 @@ def _hf_metadata(s: dict, duration: float) -> dict:
             "short_summary": "%s title: %s" % (ht.STYLES[s["style"]]["label"], _hf_shown(s))}
 
 
+def _reserve(path: str) -> bool:
+    """Create *path* empty, or False when it exists: a call running at the same time cannot take the same name."""
+    try:
+        open(path, "xb").close()
+    except FileExistsError:
+        return False
+    return True
+
+
 def _free_path(folder: str, base: str, ext: str, taken=()) -> str:
-    """'<base><ext>' in *folder*, else '<base> (1)<ext>'...: free on disk and not a Project Files path in *taken*."""
+    """Reserve '<base><ext>' in *folder*, else '<base> (1)<ext>'...: free on disk and not a Project Files path in *taken*."""
     base = title_svg.safe_base_name(base)
     used = {os.path.normcase(os.path.abspath(p)) for p in taken}
     path, n = os.path.join(folder, base + ext), 0
-    while os.path.exists(path) or os.path.normcase(os.path.abspath(path)) in used:
+    while os.path.normcase(os.path.abspath(path)) in used or not _reserve(path):
         n += 1
         path = os.path.join(folder, "%s (%d)%s" % (base, n, ext))
     return path
 
 
 def _render_title(s: dict, size, fps: float, duration: float, out_path: str) -> None:
-    """Render title spec *s* with HyperFrames into *out_path* (.mov with alpha, or .mp4 when opaque)."""
+    """Render title spec *s* with HyperFrames into *out_path* (.mov with alpha, or .mp4 when opaque).
+
+    *out_path* is the reserved empty file; a failed render removes it.
+    """
     project = "title-%d" % time.time_ns()
+    done = False
     try:
         root = hf.project_dir(project)
         os.makedirs(root)
@@ -245,14 +258,17 @@ def _render_title(s: dict, size, fps: float, duration: float, out_path: str) -> 
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         if opaque:
             shutil.move(src, out_path)
+            done = True
             return
         _path, err = th()._reencode_alpha_for_openshot(src, output_path=out_path, width=size[0], height=size[1])
         if err:
-            _discard(out_path)
             raise ToolError(err)
+        done = True
     except hf.HyperframesError as exc:
         raise ToolError(str(exc)) from None
     finally:
+        if not done:
+            _discard(out_path)
         shutil.rmtree(hf.project_dir(project), ignore_errors=True)
 
 
@@ -559,7 +575,7 @@ def _version_path(folder: str, current: str, ext: str, taken=()) -> str:
     used = {os.path.normcase(os.path.abspath(p)) for p in taken}
     for k in range(n + 1, n + 1000):
         path = os.path.join(folder, f"{base} v{k}{ext}")
-        if not os.path.exists(path) and os.path.normcase(os.path.abspath(path)) not in used:
+        if os.path.normcase(os.path.abspath(path)) not in used and _reserve(path):
             return path
     raise ToolError(f"no free version name for {stem!r}")
 
@@ -582,15 +598,24 @@ def _edited_spec(old: dict, text, subtitle, lines, style, font, font_scale, text
                  font or old["font"], max(0.2, min(5.0, old["font_scale"] * float(font_scale or 1.0))), zone)
 
 
-def _commit_edit(f, scope_used, clip_id, out_path, src_path, extra=None, replace=False):
+def _commit_edit(f, scope, clip_id, out_path, src_path, extra=None, replace=False):
     """Point the title's clips (all_clips), one clip (this_clip) or nothing (duplicate) at *out_path*. GUI thread.
 
+    The clips are read now, not before the render: this_clip needs its clip to still use the title, and edits the
+    title in place when that clip is its only user. Returns (file id, clip ids, the scope that was used).
     *replace* (a rendered title): all_clips imports the render as a new Project Files entry, with its own
     probe, plays it in every clip and removes the old entry; an SVG title keeps its entry, re-pointed.
     """
     from classes.media_fingerprint import fingerprint
     from classes.query import Clip, File
-    clips = _clips_of(f.id) if scope_used == "all_clips" else [c for c in _clips_of(f.id) if c.id == clip_id]
+    clips, scope_used = _clips_of(f.id), scope
+    if scope == "this_clip":
+        mine = [c for c in clips if c.id == clip_id]
+        if not mine:
+            raise ToolError(f"clip {clip_id} no longer uses this title; nothing changed")
+        if len(clips) == 1:
+            scope_used = "all_clips"
+        clips = mine
     if scope_used != "duplicate":
         _refuse_locked(clips)
     if scope_used == "all_clips" and replace:
@@ -605,7 +630,7 @@ def _commit_edit(f, scope_used, clip_id, out_path, src_path, extra=None, replace
         if old:
             old.delete()
         refresh_file_and_clips(new_file.id, ids)
-        return new_file.id, ids
+        return new_file.id, ids, scope_used
     new_fp = fingerprint(out_path)
     if scope_used == "all_clips":
         current = File.get(id=f.id)
@@ -616,7 +641,7 @@ def _commit_edit(f, scope_used, clip_id, out_path, src_path, extra=None, replace
         current.data = changes
         current.save()
         ids = []
-        for c in _clips_of(f.id):
+        for c in clips:
             reader = dict(c.data.get("reader") or {})
             reader["path"] = out_path
             live = Clip.get(id=c.id)
@@ -624,15 +649,15 @@ def _commit_edit(f, scope_used, clip_id, out_path, src_path, extra=None, replace
             live.save()
             ids.append(c.id)
         refresh_file_and_clips(f.id, ids)
-        return f.id, ids
+        return f.id, ids, scope_used
     new_file = import_media_file(out_path, extra=extra)
     if scope_used == "this_clip":
         live = Clip.get(id=clip_id)
         live.data = {"file_id": new_file.id, "reader": dict(new_file.data)}
         live.save()
         refresh_file_and_clips(new_file.id, [clip_id])
-        return new_file.id, [clip_id]
-    return new_file.id, []
+        return new_file.id, [clip_id], scope_used
+    return new_file.id, [], scope_used
 
 
 def _refuse_locked(clips) -> None:
@@ -740,8 +765,8 @@ def _edit_hyperframes(f, old, clip_id, scope, scope_used, src_path, size, taken,
     else:
         out_path = _free_path(folder, os.path.splitext(os.path.basename(src_path))[0], ext, taken)
     _render_title(new, size, project_fps(), duration, out_path)
-    new_id, clip_ids = _commit_or_discard(
-        lambda: _commit_edit(f, scope_used, clip_id, out_path, src_path, {"ai_metadata": _hf_metadata(new, duration)},
+    new_id, clip_ids, scope_used = _commit_or_discard(
+        lambda: _commit_edit(f, scope, clip_id, out_path, src_path, {"ai_metadata": _hf_metadata(new, duration)},
                              replace=True),
         out_path)
     return _edit_receipt(scope, scope_used, clip_id, out_path, new_id, f.id, clip_ids, _hf_shown(new),
@@ -778,9 +803,13 @@ def _edit_svg(f, clip_id, scope, scope_used, src_path, taken, families, style, t
         if not free:
             raise ToolError("no free name for the copy")
         out_path = os.path.join(folder, free + ".svg")
-    title_svg.write(doc, out_path)
-    new_id, clip_ids = _commit_or_discard(lambda: _commit_edit(f, scope_used, clip_id, out_path, src_path),
-                                          out_path)
+    try:
+        title_svg.write(doc, out_path)
+    except Exception:
+        _discard(out_path)
+        raise
+    new_id, clip_ids, scope_used = _commit_or_discard(
+        lambda: _commit_edit(f, scope, clip_id, out_path, src_path), out_path)
     shown = " / ".join(r["text"] for r in after if r["text"]) or name
     extra = dict(fields=after, **style_info)
     if fitted:

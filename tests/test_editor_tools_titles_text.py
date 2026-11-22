@@ -379,6 +379,63 @@ def test_edit_a_hyperframes_title_for_one_clip_and_refusals(tt, hft):
     assert len(hft.renders) == renders and tt.undo_steps_since_mark() == 0
 
 
+def _during_render(monkeypatch, action):
+    """Run *action* once while the next title renders."""
+    from classes import hyperframes_local as hf
+    real, pending = hf.run, [action]
+
+    def run(*args, **kwargs):
+        if pending:
+            pending.pop()()
+        return real(*args, **kwargs)
+    monkeypatch.setattr(hf, "run", run)
+
+
+def test_two_titles_of_one_name_rendering_together_keep_their_own_files(tt, hft, monkeypatch):
+    inner = []
+    _during_render(monkeypatch, lambda: inner.append(
+        receipt(tt.call("add_title_tool", text="Intro", file_name="same", position_seconds=10))))
+    outer = receipt(tt.call("add_title_tool", text="Outro", file_name="same"))
+    assert outer["path"] != inner[0]["path"]
+    assert tt.file(inner[0]["file_id"])["path"] == inner[0]["path"]
+
+
+def test_a_rendered_title_reports_its_length(tt, hft):
+    from classes.editor_tools.media_files import describe_file
+    from classes.query import File
+    rec = receipt(tt.call("add_title_tool", text="Intro"))
+    info = describe_file(File.get(id=rec["file_id"]), full=True)
+    assert info["kind"] == "title" and info["duration"] and info["media_duration"]
+    svg = _svg_title(tt, "Day 1", position=20.0)
+    assert describe_file(File.get(id=svg["file_id"]), full=True)["duration"] is None
+
+
+def test_this_clip_edit_refuses_a_clip_repointed_during_the_render(tt, hft, monkeypatch):
+    from classes.query import Clip
+    rec = receipt(tt.call("add_title_tool", text="Day 1"))
+    other = _second_clip(tt, rec["timeline_clip_id"])
+    f = tt.add_file("video", duration=30.0)
+
+    def repoint():
+        live = Clip.get(id=other)
+        live.data = {"file_id": f}
+        live.save()
+    _during_render(monkeypatch, repoint)
+    out = tt.call("edit_title_tool", timeline_clip_id=other, scope="this_clip", text="Day 2")
+    assert out.startswith("Error") and "no longer uses this title" in out
+    assert tt.clip(other)["file_id"] == f
+
+
+def test_this_clip_edit_leaves_a_clip_added_during_the_render_alone(tt, hft, monkeypatch):
+    rec = receipt(tt.call("add_title_tool", text="Day 1"))
+    added = []
+    _during_render(monkeypatch, lambda: added.append(_second_clip(tt, rec["timeline_clip_id"])))
+    edit = receipt(tt.call("edit_title_tool", timeline_clip_id=rec["timeline_clip_id"], scope="this_clip",
+                           text="Day 2"))
+    assert edit["timeline_clip_ids"] == [rec["timeline_clip_id"]] and edit["scope"] == "this_clip"
+    assert tt.clip(added[0])["file_id"] == rec["file_id"]
+
+
 def test_svg_title_edits_refuse_hyperframes_only_changes(tt):
     svg = _svg_title(tt, "Day 1", "Tokyo")
     out = tt.call("edit_title_tool", timeline_clip_id=svg["timeline_clip_id"], style="kicker")

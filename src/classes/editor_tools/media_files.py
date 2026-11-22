@@ -181,7 +181,7 @@ def describe_file(f, usage=None, full=False, check_missing=True) -> dict:
     clip_ids = (usage or {}).get(str(f.id), [])
     start, end = _source_window(data)
     kind = kind_of(data)
-    still = kind in ("image", "title")
+    still = kind == "image" or (kind == "title" and _base_name(data).lower().endswith(".svg"))
     ai = data.get("ai_metadata") if isinstance(data.get("ai_metadata"), dict) else {}
     out = {
         "file_id": str(f.id),

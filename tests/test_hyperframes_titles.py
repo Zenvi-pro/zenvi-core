@@ -30,6 +30,12 @@ def test_text_is_escaped_and_the_spec_rides_along():
                       .replace("&lt;", "<").replace("&gt;", ">").replace("&#x27;", "'"))["subtitle"] == "a<b"
 
 
+def test_every_bold_box_is_gone_by_the_end():
+    s = ht.spec("bold_box", title="One\nTwo", subtitle="Three")
+    exit_ = ht.compile_composition(s, 1920, 1080, 1.0).split('.to(".box"')[1].split(");")[0]
+    assert "stagger" not in exit_   # each box would end 0.05 s later than the last
+
+
 def test_spec_fields_follow_the_style():
     lt = ht.spec("lower_third", title="Jane Doe\nFounder, Acme")
     assert (lt["title"], lt["subtitle"]) == ("Jane Doe", "Founder, Acme")

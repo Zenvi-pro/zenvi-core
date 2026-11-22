@@ -214,7 +214,7 @@ def _body(s: Dict, u: float) -> (str, str):
         js = ('tl.fromTo(".box",{clipPath:"inset(0 100% 0 0)"},{clipPath:"inset(0 0% 0 0)",duration:0.5,'
               'ease:"expo.out",stagger:0.12},0.05);'
               'tl.fromTo(".box",{scale:0.96},{scale:1,duration:0.6,ease:"back.out(1.6)",stagger:0.12},0.05);')
-        exit_ = 'tl.to(".box",{clipPath:"inset(0 0 0 100%)",duration:OUT,ease:"expo.in",stagger:0.05},END-OUT);'
+        exit_ = 'tl.to(".box",{clipPath:"inset(0 0 0 100%)",duration:OUT,ease:"expo.in"},END-OUT);'
     elif style == "kicker":
         html_ = '<div class="stack center"><div class="kick"><span class="line"></span>%s<span class="line">' \
                 '</span></div>%s</div>' % (
