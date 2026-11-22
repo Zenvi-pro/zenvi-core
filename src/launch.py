@@ -150,14 +150,14 @@ def _exit_if_update_installing():
 _exit_if_update_installing()
 
 try:
-    from classes.ffmpeg_cli import ensure_ffmpeg_on_path
-    ensure_ffmpeg_on_path()
+    from classes.zenvi_env import load_zenvi_dotenv
+    load_zenvi_dotenv()
 except Exception:
     pass
 
-try:
-    from classes.zenvi_env import load_zenvi_dotenv
-    load_zenvi_dotenv()
+try:  # after .env, so ZENVI_FFMPEG_DIR set there is honoured
+    from classes.ffmpeg_cli import ensure_ffmpeg_on_path
+    ensure_ffmpeg_on_path()
 except Exception:
     pass
 
