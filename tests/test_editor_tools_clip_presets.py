@@ -276,6 +276,19 @@ def test_a_preset_that_changes_nothing_leaves_no_undo_step_and_keeps_redo(editor
     assert editor.clip(c)["rotation"]["Points"][0]["co"]["Y"] == 90.0
 
 
+def test_a_preset_that_changes_something_clears_redo_even_at_the_undo_limit(editor, timeline):
+    f = editor.add_file("video")
+    c = editor.add_clip(f, end=10.0, rotation=curve(0.0))
+    receipt(editor.call("apply_clip_preset_tool", timeline_clip_ids=[c], preset="rotate_90_right"))
+    editor.undo()
+    assert editor.manager.redoHistory
+    # Full: the preset's new step evicts the oldest one, so the history does not get longer.
+    editor.manager.MEMORY_STEPS = len({a.transaction for a in editor.manager.actionHistory})
+    r = receipt(editor.call("apply_clip_preset_tool", timeline_clip_ids=[c], preset="rotate_180"))
+    assert r["changed"] is not False
+    assert not editor.manager.redoHistory  # a redo would put 90 degrees back over this edit
+
+
 def test_flip_negates_scale_and_keeps_animation(editor, timeline):
     c = editor.add_clip(editor.add_file("video"), end=10.0,
                         scale_x={"Points": [{"co": {"X": 1.0, "Y": 1.0}}, {"co": {"X": 301.0, "Y": 1.2}}]})

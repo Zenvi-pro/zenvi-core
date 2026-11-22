@@ -1109,12 +1109,20 @@ jobs:
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_NOTARIZE_PASSWORD" \
             --wait \
-            --output-format json | tee "$SUBMIT_LOG"
+            --output-format json 2>&1 | tee "$SUBMIT_LOG"
           SUBMIT_EXIT=$?
           set -e
 
           STATUS=$(grep -o '"status":"[^"]*"' "$SUBMIT_LOG" | head -1 | cut -d'"' -f4 || echo "")
           SUBMIT_ID=$(grep -o '"id":"[^"]*"' "$SUBMIT_LOG" | head -1 | cut -d'"' -f4 || echo "")
+
+          # An expired Apple agreement is not the pull request's fault and only the
+          # account holder can sign it. Nothing ships from a pull request, so test
+          # the signed DMG; a tag or releases build still fails below.
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] && grep -q "required agreement is missing or has expired" "$SUBMIT_LOG"; then
+            echo "::warning::Not notarized: the Apple developer agreement must be accepted before the next release"
+            exit 0
+          fi
 
           if [ "$STATUS" != "Accepted" ] || [ "$SUBMIT_EXIT" -ne 0 ]; then
             echo "::error::Notarization did not succeed (status=$STATUS, exit=$SUBMIT_EXIT)"

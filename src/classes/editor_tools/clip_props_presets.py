@@ -230,15 +230,16 @@ class _History:
 
     def __init__(self, updates):
         self.updates = updates
-        self.start = len(updates.actionHistory)
+        self.mark = updates.history_mark()
         self.redo = list(updates.redoHistory)
 
     def drop_noops(self) -> bool:
         history = self.updates.actionHistory
-        added = history[self.start:]
+        start = self.updates.since_mark(self.mark)
+        added = history[start:]
         real = [a for a in added if not _is_noop_action(a)]
         if len(real) != len(added):
-            del history[self.start:]
+            del history[start:]
             history.extend(real)
         if not real:
             self.updates.redoHistory[:] = self.redo
