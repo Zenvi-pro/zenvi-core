@@ -6231,6 +6231,10 @@ def build_editor_snapshot_for_chat(max_chars: int = 5500) -> str:
             head += "MEDIA_BIN: (empty)\n"
 
         tl = get_timeline_state()
+        try:
+            tl = json.loads(tl)["data"]["legacy_text"]
+        except (ValueError, TypeError, KeyError):
+            pass  # "Error: ..." strings pass through as-is
         body = (tl or "").strip()
         out = f"{head}TIMELINE:\n{body}\n" if body else f"{head}TIMELINE: (empty or unavailable)\n"
         if len(out) > max_chars:
