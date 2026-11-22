@@ -6,4 +6,5 @@
 #   .build/release/zenvi-apple-speech-asr
 #
 # Zenvi looks for it via PATH, ZENVI_APPLE_SPEECH_ASR, or this .build path.
-# If missing or exit 2 (old macOS), transcription falls back to faster-whisper.
+# If missing or exit 2 (old macOS), transcription falls back to the captions recogniser
+# (Whistle, or Parakeet when installed).
