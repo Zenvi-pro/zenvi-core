@@ -595,7 +595,7 @@ def install_parakeet() -> None:
     """Have the CLI download its Parakeet recogniser (runtime and model) into Zenvi's folder."""
     node = find_program("node")
     if not node or not os.path.isfile(cli_script()):
-        raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+        raise HyperframesError("HyperFrames is not set up on this computer yet; call run_tool(name='hyperframes_setup_tool', args={'install': true})")
     code, out = _exec([node, cli_script(), *PARAKEET_INSTALL], home(), node, INSTALL_TIMEOUT)
     if code != 0:
         raise HyperframesError("could not install the Parakeet speech recogniser (exit code %d): %s"
@@ -611,7 +611,7 @@ def install_rvm() -> None:
             return
         node = find_program("node")
         if not node:
-            raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+            raise HyperframesError("HyperFrames is not set up on this computer yet; call run_tool(name='hyperframes_setup_tool', args={'install': true})")
         code, out = _exec(_node_tool(node, "npm") + ["install", "onnxruntime-node@" + ORT_VERSION, "--prefix",
                                                       _ort_dir(), "--no-audit", "--no-fund"],
                           home(), node, INSTALL_TIMEOUT, isolated=False)
@@ -633,7 +633,7 @@ def matte(project: str, source: str, output: str, timeout: float = SPEECH_TIMEOU
         _check_value(project, "ffmpeg", "", path, ())
     node, ffmpeg = find_program("node"), find_program("ffmpeg")
     if not node or not ffmpeg:
-        raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+        raise HyperframesError("HyperFrames is not set up on this computer yet; call run_tool(name='hyperframes_setup_tool', args={'install': true})")
     os.makedirs(os.path.dirname(os.path.join(root, output)) or root, exist_ok=True)
     code, out = _exec([node, RVM_RUNNER, _ort_module(), rvm_model(), ffmpeg, source, output], root, node, timeout)
     if code != 0:
@@ -665,7 +665,7 @@ def recognise(wav: str, language: Optional[str] = None, timeout: float = SPEECH_
     try:
         with _speech_install_lock:                      # no install swaps the files between the check and the run
             if not speech_ready(fresh=True):            # hashed again each run: this file is executed
-                raise HyperframesError("the speech recogniser is not installed; call hyperframes_setup_tool")
+                raise HyperframesError("the speech recogniser is not installed; call run_tool(name='hyperframes_setup_tool', args={'install': true})")
             proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                   timeout=timeout, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
     except subprocess.TimeoutExpired:
@@ -692,7 +692,7 @@ def transcribe_parakeet(wav: str, language: Optional[str] = None, timeout: float
     """
     node = find_program("node")
     if not node or not os.path.isfile(cli_script()):
-        raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+        raise HyperframesError("HyperFrames is not set up on this computer yet; call run_tool(name='hyperframes_setup_tool', args={'install': true})")
     out_dir = tempfile.mkdtemp(prefix="zenvi-parakeet-")
     try:
         argv = [node, cli_script(), "transcribe", wav, "--engine", "parakeet", "--json", "--dir", out_dir]
@@ -948,7 +948,7 @@ def check_command(project: str, program: str, args: Iterable[str], inputs: Itera
                  if a.startswith(("-e", "--e")) or a == "-m" or a.startswith("--m")]
         if not flags or any(a != "--engine=parakeet" and (a, value) != ("--engine", "parakeet") for a, value in flags):
             raise HyperframesError("hyperframes transcribe runs here only with --engine parakeet (install it with "
-                                   "hyperframes_setup_tool accurate_speech=true); for captions use add_captions_tool")
+                                   "run_tool(name='hyperframes_setup_tool', args={'install': true, 'accurate_speech': true})); for captions use add_captions_tool")
     out = list(args)
     if program in SCRIPT_PROGRAMS:
         if not sub or sub.startswith("-"):
@@ -979,12 +979,12 @@ def run(project: str, program: str, args: Iterable[str], timeout: float = DEFAUL
     node = find_program("node")
     if program == "hyperframes":
         if not node or not os.path.isfile(cli_script()):
-            raise HyperframesError("HyperFrames is not set up on this computer yet; call hyperframes_setup_tool")
+            raise HyperframesError("HyperFrames is not set up on this computer yet; call run_tool(name='hyperframes_setup_tool', args={'install': true})")
         argv = [node, cli_script()] + tail
     else:
         exe = find_program(program)
         if not exe:
-            raise HyperframesError("%s was not found on this computer; call hyperframes_setup_tool" % program)
+            raise HyperframesError("%s was not found on this computer; call run_tool(name='hyperframes_setup_tool', args={'install': true})" % program)
         argv = [exe] + tail
     cwd = project_dir(project)
     os.makedirs(cwd, exist_ok=True)

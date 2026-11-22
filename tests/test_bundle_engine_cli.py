@@ -27,6 +27,9 @@ def _dist(tmp_path):
 def _bundle(dist, dest, protocol=None):
     env = dict(os.environ)
     env.pop("FAKE_ZENVI_PROTOCOL", None)
+    home = dist.parent / "home"  # importing engine_bridge opens a log in the user profile
+    home.mkdir()
+    env.update(HOME=str(home), USERPROFILE=str(home))
     if protocol is not None:
         env["FAKE_ZENVI_PROTOCOL"] = str(protocol)
     return subprocess.run([sys.executable, SCRIPT, str(dist), "--node", sys.executable, "--dest", str(dest)],

@@ -15,7 +15,8 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "classes"
 LISTED = set(CORE_TOOL_NAMES) | {"find_tools", "run_tool"}
 NAME = re.compile(r"\b[a-z][a-z0-9_]*_tool\b")
 VIA_RUN_TOOL = re.compile(r"""run_tool\(name=["']([a-z0-9_]+_tool)["']""")
-ERROR_CALLS = {"ToolError", "fail"}
+# HyperframesError: HyperFrames, Manim, speech and the speaker cut-out say what to install; tools pass it on as is.
+ERROR_CALLS = {"ToolError", "fail", "HyperframesError"}
 # Success results point at the next step too: ok(summary, next=..., hint=...) and "next" fields.
 HINT_KEYS = {"next", "hint", "next_step", "next_steps", "note", "notes", "message", "summary", "suggestion", "tip"}
 

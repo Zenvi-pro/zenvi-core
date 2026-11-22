@@ -225,7 +225,10 @@ def call_meta_tool(name: str, args: dict):
         terms = _words(args.get("query", ""))
         from classes.agent_tools.core_tools import CORE_TOOL_NAMES
 
-        listed = set(CORE_TOOL_NAMES) | set(_extra_tools())
+        from classes.editor_tools import unavailable_tools
+
+        # A tool whose runtime is missing here is not offered: the agent would call it and fail.
+        listed = set(CORE_TOOL_NAMES) | set(_extra_tools()) | unavailable_tools()
         scored = sorted((-(3 * len(terms & _words(n.replace("_", " "))) + len(terms & _words(d["description"]))), n)
                         for n, d in defs.items() if n not in listed)
         try:

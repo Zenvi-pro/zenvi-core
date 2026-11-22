@@ -128,7 +128,8 @@ class EngineRuntimeDialog(QDialog):
         # The app ships the CLI: installing only fetches Node, no source needed.
         bundled = bool(status.get("bundled")) and not source
         if status.get("ready"):
-            where = _("installed") if status.get("managed") else _("from %s") % status.get("cli")
+            where = (_("installed") if status.get("managed") else _("shipped with this Zenvi")
+                     if status.get("shipped") else _("from %s") % status.get("cli"))
             text = _("Ready: zenvi CLI %(version)s (%(where)s, bridge protocol %(protocol)s) on Node.js "
                      "%(node_version)s at %(node)s.") % {
                 "version": status.get("cli_version") or "", "where": where, "protocol": status.get("protocol"),
@@ -150,14 +151,24 @@ class EngineRuntimeDialog(QDialog):
                 self._install_btn.setText(_("Download and Install"))
             text = text % {"what": _(" and ").join(parts), "home": status.get("home"),
                            "protocol": status.get("protocol")}
-        if not source and not bundled:
+        if status.get("named") and not status.get("ready"):
+            # A path the user named is the one that runs: installing cannot help, fixing the path does.
+            text = _("Zenvi engine tools cannot run: %s. Fix or clear that path in Preferences > AI.") % (
+                status.get("problem") or "").rstrip(".")
+        elif status.get("shipped") and not source:
+            text += "\n\n" + _("The zenvi CLI shipped with this Zenvi is updated by each new Zenvi release. To run "
+                               "another build, set Preferences > AI > Zenvi Engine Tools Source.")
+        elif not source and not bundled:
             text += "\n\n" + _("Set Preferences > AI > Zenvi Engine Tools Source to a release manifest URL or to "
                                "a zenvi CLI build folder (zenvi-web packages/cli/dist) to install or update.")
         if engine_bridge.bridge_setting() == "off":
             text += "\n\n" + _("Engine tools are turned off (Preferences > AI > Zenvi Engine Tools): installed "
                                "or not, none is listed until that is turned back on.")
         self._label.setText(text)
-        self._install_btn.setEnabled(bool(source) or (bundled and not status.get("ready")))
+        # No dead button: when installing can do nothing it is gone, and the text above says why.
+        can = not status.get("named") and (bool(source) or (bundled and not status.get("ready")))
+        self._install_btn.setVisible(can)
+        self._install_btn.setEnabled(can)
         self._fit()
 
     # -- install --------------------------------------------------------------

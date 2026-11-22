@@ -209,7 +209,7 @@ def test_an_equation_without_latex_says_how_to_get_it(home, monkeypatch):
                                                          "a log file. Check your LaTeX installation."))
     with pytest.raises(hf.HyperframesError) as err:
         ml.render("proof", "scene.py", "Pythagoras")
-    assert "latex=true" in str(err.value)
+    assert "'latex': true" in str(err.value)
 
 
 def test_render_before_setup_says_how_to_set_up(home):

@@ -108,6 +108,41 @@ def test_a_cli_the_app_ships_offers_only_the_node_download(dialog_env, monkeypat
     dlg.reject()
 
 
+def _shown(dlg_mod, monkeypatch, **status):
+    status = {"home": "/tmp/engine", "source": "", "protocol": 2, **status}
+    monkeypatch.setattr(engine_runtime, "status", lambda: status)
+    dlg = dlg_mod.EngineRuntimeDialog()
+    assert _wait(lambda: dlg._worker is None and dlg._status)
+    return dlg
+
+
+def test_the_cli_the_app_ships_is_ready_with_no_source_and_says_where_updates_come_from(dialog_env, monkeypatch):
+    dlg = _shown(dialog_env[0], monkeypatch, ready=True, bundled=True, shipped=True, cli="/app/lib/engine/zenvi.mjs",
+                 node="/usr/bin/node", node_version="v24")
+    text = dlg._label.text()
+    assert text.startswith("Ready: zenvi CLI") and "shipped with this Zenvi" in text
+    # No dead Update button: it is gone, and the text says why.
+    assert dlg._install_btn.isHidden()
+    assert "new Zenvi release" in text and "Engine Tools Source" in text
+    dlg.reject()
+
+
+def test_with_nothing_to_install_from_the_button_is_gone_and_the_text_says_why(dialog_env, monkeypatch):
+    dlg = _shown(dialog_env[0], monkeypatch, ready=False, node_needed=True)
+    assert dlg._install_btn.isHidden() and "Engine Tools Source" in dlg._label.text()
+    dlg.reject()
+
+
+def test_a_bad_cli_path_is_shown_with_the_path_not_as_not_installed(dialog_env, monkeypatch):
+    dlg = _shown(dialog_env[0], monkeypatch, ready=False, named=True, bundled=True, source="/tmp/engine-cli.json",
+                 problem="the zenvi CLI is not at /typo/zenvi.mjs (ZENVI_ENGINE_CLI / the engine-cli-path setting)")
+    text = dlg._label.text()
+    assert "/typo/zenvi.mjs" in text and not text.startswith("Not installed")
+    # Installing cannot help: a path the user named is the one that runs.
+    assert dlg._install_btn.isHidden()
+    dlg.reject()
+
+
 def test_close_during_the_status_check_is_instant_and_the_check_ends_detached(dialog_env, monkeypatch):
     import gc
 
