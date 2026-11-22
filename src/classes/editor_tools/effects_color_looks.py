@@ -110,7 +110,8 @@ def _same(a, b) -> bool:
     covers=("look.presets",),
 )
 def apply_look_preset(*, look, timeline_clip_id="", clip_query="", track="", timeline_clip_ids=None, scope=""):
-    """Apply one of the editor's Clip > Look presets to clips, exactly as the menu does: "add film
+    """Use for Clip > Look presets: film grain, VHS, glow, soft focus, sharpen, drop shadow, remove the look. Not for a colour grade (color_grade_clip_tool).
+    Apply one of the editor's Clip > Look presets to clips, exactly as the menu does: "add film
     grain", "make it look like VHS", "soft focus", "add a glow", "drop shadow under the logo",
     "sharpen it", "remove the look". Re-applying a preset of the same family replaces it (no stacking).
 
@@ -237,7 +238,7 @@ def color_grade_clip(timeline_clip_id="", clip_query="", track="", timeline_clip
                      exposure=None, contrast=None, highlights=None, shadows=None, saturation=None, vibrance=None,
                      temperature=None, tint=None, mix=None, lut="", lut_intensity=None, wheels=None, curves=None,
                      reset=False):
-    """Color grade clips: a named look, a LUT and/or exact controls, in the Color Grade effect.
+    """Use for a colour grade (brightness, black and white or monochrome): a named look, a LUT or exact controls. Not for film grain or VHS (find_tools).
 
     Each clip keeps ONE Color Grade effect, updated in place, never stacked.
     One undo step for all clips. Without look/reset only the given controls
@@ -402,7 +403,8 @@ AUDIO_PRESETS = {
 )
 def apply_audio_effect(*, preset, timeline_clip_id="", clip_query="", track="", timeline_clip_ids=None, scope="",
                        properties=None):
-    """Put an audio effect on clips' sound with sensible settings: "add a compressor to the voice", "add
+    """Use for a named audio effect on clips' sound: compressor, EQ (low cut, bass or treble boost, voice presence), echo, phone, robot, whisper, noise gate, distortion, audio delay. Not for volume and ducking (run_tool(name='set_clip_volume_tool'), run_tool(name='duck_under_speech_tool')).
+    Put an audio effect on clips' sound with sensible settings: "add a compressor to the voice", "add
     echo", "remove the low rumble", "boost the bass", "make it sound like a phone call", "robot voice",
     "whisper effect", "noise gate", "delay the audio 100 ms to fix sync". A clip that already has the
     same effect type is updated (not stacked). Tune further with run_tool(name='update_effect_tool'); remove with
@@ -518,7 +520,8 @@ def _placement(keyed, background, align):
 def chroma_key_clip(timeline_clip_id="", clip_query="", track="", key_color="auto", method="basic_soft",
                     fuzz=None, halo=10.0, background_clip_id="", background_query="", align="auto",
                     sample_time=None):
-    """Remove a green or blue screen with the Chroma Key effect, optionally compositing over a background clip.
+    """Use for removing a green or blue screen with the Chroma Key effect, to composite over a background clip. Not for a subject matte (a background replacement, found with find_tools).
+    Remove a green or blue screen with the Chroma Key effect, optionally compositing over a background clip.
 
     key_color='auto' samples the frame edges, or the frame's screen areas
     when the screen does not reach the edges. One ChromaKey per clip (updated

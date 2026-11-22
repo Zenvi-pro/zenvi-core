@@ -175,7 +175,8 @@ def _project_file_choices() -> dict:
 )
 def add_animated_title(template="", text="", params=None, length_multiplier=1, position_seconds=0.0, track="",
                        file_name="", timeout_seconds=900):
-    """Render a 3D animated title with Blender and place it on the timeline (Title > Animated Title).
+    """Use for a three-dimensional animated title with text (flying, neon or space movie intro), rendered with Blender from a template (needs Blender). Not for a flat title (run_tool(name='add_title_tool')) or a 3D scene or object (find with find_tools).
+    Render a 3D animated title with Blender and place it on the timeline (Title > Animated Title).
 
     Use for "animated title", "3D flying title", "neon title", "space movie intro".
     Needs Blender (Preferences > General > Blender Command); without it the call is

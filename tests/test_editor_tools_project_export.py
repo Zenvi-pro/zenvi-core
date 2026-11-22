@@ -122,12 +122,12 @@ def test_new_project_discard_and_unknown_profile_is_refused_before_anything(edit
 
 # --- open -----------------------------------------------------------------
 
-def test_open_project_validates_before_touching_anything(editor, tmp_path):
+def test_open_project_validates_before_touching_anything(editor, settings, tmp_path):
     assert "not found" in editor.call("open_project_tool", file_path=str(tmp_path / "nope.zvn"))
     media = tmp_path / "clip.mp4"
     media.write_bytes(b"x")
     assert "not a project file" in editor.call("open_project_tool", file_path=str(media))
-    assert "give file_path" in editor.call("open_project_tool")
+    assert _receipt(editor.call("open_project_tool"))["projects"] == []  # no file given: the recent list
     editor.window.open_project.assert_not_called()
 
 
@@ -204,7 +204,7 @@ def test_recent_projects_list_and_forget(editor, settings, tmp_path):
     kept.write_text("{}")
     gone = str(tmp_path / "gone.zvn")
     settings.values["recent_projects"] = [gone, str(kept)]
-    data = _receipt(editor.call("list_recent_projects_tool"))
+    data = _receipt(editor.call("open_project_tool"))
     assert [p["name"] for p in data["projects"]] == ["kept", "gone"]
     assert [p["exists"] for p in data["projects"]] == [True, False]
 
@@ -315,6 +315,23 @@ def test_import_xml_validates_the_file(editor, tmp_path):
     other = tmp_path / "z.txt"
     other.write_text("x")
     assert "cannot tell the format" in editor.call("import_project_file_tool", file_path=str(other))
+
+
+def test_an_xml_import_cancelled_while_planning_changes_nothing(editor, tmp_path, monkeypatch):
+    from classes.handoff import jobs
+    from classes.importers import final_cut_pro as importer
+    xml = tmp_path / "cut.xml"
+    xml.write_text("<xmeml><sequence/></xmeml>")
+    committed = []
+
+    def plan(path, **kwargs):  # the cancel lands after its last check
+        for job in jobs.running_jobs(kind="xml-import"):
+            job.cancel()
+        return types.SimpleNamespace(sequence_name="s", warnings=[], placement="start", offset=0.0)
+    monkeypatch.setattr(importer, "plan_import", plan)
+    monkeypatch.setattr(importer, "commit_import", lambda p: committed.append(p) or {})
+    assert "cancelled" in editor.call("import_project_file_tool", file_path=str(xml))
+    assert not committed
 
 
 def test_export_fcpxml_and_edl(editor, tmp_path, monkeypatch):

@@ -97,17 +97,19 @@ def test_a_transaction_still_open_on_another_thread_is_not_trimmed():
     def tool():
         _edit(manager, 1, transaction="tool")
         first.set()
-        resume.wait(5)
+        resume.wait()
         _edit(manager, 2, transaction="tool")
         manager.transaction_id = None
 
     worker = threading.Thread(target=tool)
     worker.start()
-    assert first.wait(5)
-    for n in range(10, 20):
-        _edit(manager, n)
-    resume.set()
-    worker.join(5)
+    try:
+        assert first.wait(30)
+        for n in range(10, 20):
+            _edit(manager, n)
+    finally:
+        resume.set()
+        worker.join()
     assert [a.values["position"] for a in manager._tail_transaction(manager.actionHistory)] == [2, 1]
     for n in range(20, 24):
         _edit(manager, n)

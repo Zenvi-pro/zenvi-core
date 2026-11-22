@@ -327,7 +327,8 @@ def apply_profile_and_reframe(record: dict, reframe: str) -> dict:
 )
 def list_project_profiles(query="", width=0, height=0, fps=0, aspect="", orientation="",
                           include_social_presets=True, limit=30):
-    """Search the 425 built-in video profiles plus the user's custom ones (the Choose Profile dialog).
+    """Use for searching the built-in and custom video profiles and the social presets. Not for changing the project (run_tool(name='set_project_setting_tool')).
+    Search the 425 built-in video profiles plus the user's custom ones (the Choose Profile dialog).
 
     Also lists the social presets that run_tool(name='set_project_setting_tool') understands
     (instagram_reel 1080x1920, instagram_post 1080x1080, instagram_portrait
@@ -438,7 +439,8 @@ _SAMPLE_RATES = (22050, 44100, 48000, 96000, 192000)
 )
 def set_project_setting(fps=None, fps_num=None, fps_den=None, width=None, height=None, sample_rate=None,
                         profile="", from_file_id="", orientation="", channels="", reframe="keep", save_as_default=False):
-    """Change the project's format and audio: profile, size, frame rate, orientation or a file's match; sample rate and channels.
+    """Use for changing the project's format and audio: profile, size, frame rate, orientation or a file's match, for social media (Reels, TikTok, 9:16). Not for custom profile files (run_tool(name='manage_custom_profiles_tool')).
+    Change the project's format and audio: profile, size, frame rate, orientation or a file's match; sample rate and channels.
 
     Use for "make this an Instagram reel / TikTok / YouTube Short" (profile='instagram_reel' -> 1080x1920 9:16), "square for
     Instagram" (profile='instagram_post'), "switch to 4K 24 fps" (profile='cinema_4k' or '4k', fps=24), "make it vertical"
@@ -548,7 +550,8 @@ def set_project_setting(fps=None, fps_num=None, fps_den=None, width=None, height
 )
 def manage_custom_profiles(action, profile="", name="", width=0, height=0, fps=0, pixel_ratio="",
                            interlaced=False, spherical=False):
-    """Create, duplicate, edit or delete custom video profiles, or set the default profile for new projects.
+    """Use for creating, duplicating, editing or deleting custom profiles, or setting the default. Not for changing the open project (run_tool(name='set_project_setting_tool')).
+    Create, duplicate, edit or delete custom video profiles, or set the default profile for new projects.
 
     Custom profiles live in the user's profiles folder and appear in the Choose
     Profile dialog and run_tool(name='list_project_profiles_tool'). Built-in profiles cannot be

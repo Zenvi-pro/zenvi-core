@@ -2,8 +2,8 @@
 
 ``export_to_premiere_tool`` writes the timeline as Final Cut Pro 7 XML tuned
 for Premiere's importer, ``send_to_premiere_tool`` opens it in a connected
-Premiere Pro (Zenvi Link), ``import_timeline_xml_tool`` brings a Premiere /
-FCP7 XML sequence back as one undo step. The conversions live in
+Premiere Pro (Zenvi Link). The XML coming back is imported by
+``import_project_file_tool`` (project_export). The conversions live in
 ``classes.exporters.final_cut_pro`` / ``classes.importers.final_cut_pro``;
 Send To in ``classes.handoff.premiere``.
 """
@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import Any, cast
 
-from classes.editor_tools._base import ToolError, boolean, enum, obj, ok, string
+from classes.editor_tools._base import ToolError, boolean, obj, ok, string
 from classes.editor_tools._registry import editor_tool
 
 
@@ -158,63 +158,3 @@ def send_to_premiere():
     offline = result["offline"]
     extra = f"; Premiere could not find {len(offline)} media file(s)" if offline else ""
     return ok(f"Opened “{result['sequence_name']}” in Premiere Pro{extra}.", **result)
-
-
-@editor_tool(
-    "import_timeline_xml_tool",
-    label="Import Premiere / FCP XML",
-    schema=obj({
-        "path": string("The .xml file: a Premiere Pro sequence exported as Final Cut Pro XML (Premiere File > "
-                       "Export > Final Cut Pro XML, or premiere_export_xml), or any FCP7 xmeml file."),
-        "placement": enum(["new_tracks", "at_playhead"], "new_tracks = keep the sequence's own timing on new "
-                          "tracks above the existing ones; at_playhead = the same, but starting at the playhead.",
-                          "new_tracks"),
-        "sequence": string("Which sequence to import when the XML holds several (its name, as listed in the "
-                           "warnings). Empty = the first top-level sequence.", ""),
-    }, required=["path"]),
-    background_safe=True,
-    covers=("handoff.timeline_xml_import",),
-)
-def import_timeline_xml(path, placement="new_tracks", sequence=""):
-    """Bring a Premiere Pro / Final Cut Pro 7 XML sequence into this project on new tracks, as one undo step (File > Import Project > Premiere Pro XML).
-
-    Use for "bring my Premiere edit back", "import this XML". Clips keep their
-    timing, trims, speed / reverse, motion, opacity and volume keyframes;
-    disabled clips come in hidden or muted; Cross Dissolves become fades,
-    audio cross fades volume ramps; markers keep names and colours; nested
-    sequences are flattened onto extra tracks. Media not already in Project
-    Files is added; media that cannot be found is skipped and listed
-    (missing_media). Generators, titles made in Premiere, image sequences and
-    effects Zenvi lacks are listed in warnings, as are the other sequences of a
-    multi-sequence XML (import one of them with sequence). One undo step
-    removes everything it added. Example: {"path": "/Users/me/Desktop/Edit.xml"}.
-    """
-    from classes.editor_tools.titles_text_common import commit_on_main, precheck_on_main
-    from classes.handoff import jobs
-    from classes.importers import final_cut_pro as importer
-    raw = os.path.expanduser(str(path or "").strip())
-    # Relative → abspath; absolute / POSIX / UNC left alone (importer resolves).
-    target = raw if (os.path.isabs(raw) or raw.startswith(("\\\\", "//"))) else os.path.abspath(raw)
-    if not os.path.isfile(target):
-        raise ToolError(f"no XML file at {target}")
-    info = precheck_on_main(importer.read_project_info)
-    try:
-        with jobs.track_job("Importing %s" % os.path.basename(target), kind="xml-import") as job:
-            plan = importer.plan_import(target, placement=placement, info=info, should_cancel=job.should_cancel,
-                                        sequence=str(sequence or ""))
-    except jobs.JobCancelled:
-        raise ToolError("the import was cancelled; nothing changed") from None
-    except importer.XmlImportError as exc:
-        raise ToolError(str(exc)) from None
-    try:
-        summary = cast(dict, commit_on_main(importer.commit_import, plan))
-    except importer.XmlImportError as exc:
-        raise ToolError(str(exc)) from None
-    clips, tracks = summary["clip_ids"], summary["track_numbers"]
-    note = f"; {len(plan.missing)} missing media skipped" if plan.missing else ""
-    return ok(f"Imported {len(clips)} clip(s) of “{plan.sequence_name}” onto {len(tracks)} new track(s)"
-              f"{f' at {plan.offset:.2f}s' if plan.placement == 'at_playhead' else ''}{note}.",
-              sequence_name=plan.sequence_name, timeline_clip_ids=clips, layers=tracks,
-              transition_ids=summary["transition_ids"], marker_ids=summary["marker_ids"],
-              file_ids=summary["file_ids"], missing_media=plan.missing, warnings=plan.warnings,
-              placement=plan.placement, offset=round(plan.offset, 3))

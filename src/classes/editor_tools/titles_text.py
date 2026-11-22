@@ -342,7 +342,8 @@ def _project_titles(query: str) -> list:
     covers=("title.templates", "title.animated"),
 )
 def list_title_templates(kind="styles", query=""):
-    """List the title styles (and the titles already in the project) with the fields they show.
+    """Use for listing title styles, or with kind="animated" the animated title templates, and the fields they show, before run_tool(name='add_title_tool') or run_tool(name='add_animated_title_tool'), to pick a look such as a lower third. Not for placing a title.
+    List the title styles (and the titles already in the project) with the fields they show.
 
     Use before run_tool(name='add_title_tool') when the user wants a particular look ("lower third",
     "end card", "credits"), before run_tool(name='edit_title_tool') to see a title's current text,
@@ -421,7 +422,8 @@ _LOOK_PROPS = {
 def add_title(text="", subtitle="", lines=None, style=ht.DEFAULT_STYLE, font="", font_scale=1.0, text_color="",
               accent_color="", background_color="", screen_position="auto", position_seconds=0.0, track="",
               duration_seconds=5.0, file_name=""):
-    """Create an animated on-screen title and place it on the timeline, over the video.
+    """Use for title cards, lower thirds, intros (also opening titles), outros, end cards and credits over video. Not for 3D animated titles (run_tool(name='add_animated_title_tool')), word-by-word type (a kinetic title, found with find_tools), speech captions (add_captions_tool), countdowns (run_tool(name='add_timer_tool')) or emoji (run_tool(name='add_emoji_tool')).
+    Create an animated on-screen title and place it on the timeline, over the video.
 
     For titles, title cards, lower thirds, end cards, credits and any text over
     video. Not for captions of speech (add_captions_tool), countdowns
@@ -698,7 +700,7 @@ def _commit_or_discard(func, out_path):
         "scope": enum(["all_clips", "this_clip", "duplicate"],
                       "all_clips = every clip using the title (Edit Title); this_clip = only timeline_clip_id, "
                       "as its own copy; duplicate = save the edit as a new Project Files title, no clip changes "
-                      "(place it with add_clip_to_timeline_tool).", "all_clips"),
+                      "(place it with add_clips_to_timeline_tool).", "all_clips"),
     }),
     background_safe=True,
     covers=("title.edit",),
@@ -706,7 +708,8 @@ def _commit_or_discard(func, out_path):
 def edit_title(timeline_clip_id="", file_id="", title_query="", text="", subtitle="", lines=None, style="",
                font="", font_scale=1.0, text_color="", accent_color="", background_color="",
                screen_position="auto", scope="all_clips"):
-    """Change an existing title's text, style, font or colours, or duplicate it.
+    """Use for changing the text, style, font or colours of an existing title, or duplicating it. Not for adding a new title (run_tool(name='add_title_tool')).
+    Change an existing title's text, style, font or colours, or duplicate it.
 
     Titles made with run_tool(name='add_title_tool') are rendered again with the change (HyperFrames, on
     this computer); SVG titles from the Title Editor are rewritten. With no target,

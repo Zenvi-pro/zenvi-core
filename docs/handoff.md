@@ -218,8 +218,7 @@ opens) and says how to connect otherwise.
 | `call_link_host_tool` | `host` (`aftereffects`/`premiere`), `tool`, `arguments` | Runs an `ae_*` / `premiere_*` tool in the connected app; returns its receipt and frame images. Changes the Adobe app only. |
 | `import_linked_media_tool` | `path`, `link`, `position`?, `track`?, `name`? | Adds a render with its link as one undo step (AE → Zenvi uses it). The file is copied into the links folder (the original stays); WebM is re-encoded to ProRes 4444. |
 | `get_linked_clip_tool` | `clip_id` or `file_id` | Link, props, render settings, freshness, editable props, clips. Read-only. |
-| `update_linked_clip_tool` | `clip_id`/`file_id`, `props`?, `rerender`? (true) | Merges props and re-renders (one undo step), or only stores them (stale). |
-| `rerender_linked_clip_tool` | `clip_id`/`file_id` | Re-renders from source; one undo step; a failure changes nothing. |
+| `update_linked_clip_tool` | `clip_id`/`file_id`, `props`?, `rerender`? (true) | Merges props and re-renders (one undo step), or only stores them (stale). With no props it re-renders from source; a failure changes nothing. |
 | `open_linked_source_tool` | `clip_id`/`file_id`, `target`? (`code`/`studio`) | Opens the source in the code editor or the studio. |
 | `unlink_clip_tool` | `clip_id`/`file_id` | Drops the link, keeps the media; one undo step. |
 
@@ -228,7 +227,7 @@ Renders block the tool call on its worker thread (like
 `get_linked_clip_tool` report `rendering` and the toolbar pill show progress
 with Cancel. The packages add `export_to_after_effects_tool`,
 `send_to_after_effects_tool`, `export_to_premiere_tool`,
-`send_to_premiere_tool`, `import_timeline_xml_tool`,
+`send_to_premiere_tool`, `import_project_file_tool`,
 `list_remotion_compositions_tool`, `import_remotion_project_tool`,
 `export_to_remotion_tool`, `import_hyperframes_project_tool` and
 `export_to_hyperframes_tool`.
