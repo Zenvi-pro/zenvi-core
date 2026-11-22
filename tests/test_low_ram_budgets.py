@@ -8,6 +8,7 @@ preview cache was a fixed 768 MB, and the in-memory undo history had no limit:
 import os
 import py_compile
 import sys
+import threading
 
 from classes.export_acceleration.export_tuning import export_cache_bytes, get_export_pipeline_profile
 from classes.openshot_import_diag import prune_bundled_sources
@@ -73,6 +74,45 @@ def test_a_history_mark_still_finds_what_was_added_after_the_limit_trims_the_fro
     _edit(manager, 11, transaction="import")  # the oldest step was trimmed off the front
     added = manager.actionHistory[manager.since_mark(mark):]
     assert [a.values for a in added] == [{"position": 10}, {"position": 11}]
+
+
+def test_a_mark_is_right_after_a_step_inside_the_history_ages_out():
+    manager = UpdateManager()
+    manager.MEMORY_STEPS = 2
+    _edit(manager, 1, transaction="A")
+    mark = manager.history_mark()
+    _edit(manager, 2, transaction="B")
+    _edit(manager, 3, transaction="A")
+    _edit(manager, 4, transaction="C")
+    added = manager.actionHistory[manager.since_mark(mark):]
+    assert {"position": 1} not in [a.values for a in added]
+    assert [a.values for a in added][-2:] == [{"position": 3}, {"position": 4}]
+
+
+def test_a_transaction_still_open_on_another_thread_is_not_trimmed():
+    manager = UpdateManager()
+    manager.MEMORY_STEPS = 3
+    first, resume = threading.Event(), threading.Event()
+
+    def tool():
+        _edit(manager, 1, transaction="tool")
+        first.set()
+        resume.wait(5)
+        _edit(manager, 2, transaction="tool")
+        manager.transaction_id = None
+
+    worker = threading.Thread(target=tool)
+    worker.start()
+    assert first.wait(5)
+    for n in range(10, 20):
+        _edit(manager, n)
+    resume.set()
+    worker.join(5)
+    assert [a.values["position"] for a in manager._tail_transaction(manager.actionHistory)] == [2, 1]
+    for n in range(20, 24):
+        _edit(manager, n)
+    assert "tool" not in {a.transaction for a in manager.actionHistory}  # closed: it ages out
+    assert len(manager.actionHistory) == 3
 
 
 def test_a_long_transaction_is_not_rescanned_for_every_action():

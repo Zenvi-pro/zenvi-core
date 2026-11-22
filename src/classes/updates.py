@@ -265,6 +265,7 @@ class UpdateManager:
         # other's group apart.  The Qt main thread keeps its own slot, so every
         # GUI path behaves exactly as it did before.
         self._tls = threading.local()
+        self._open_transactions = {}  # thread ident -> its transaction_id, while one is set
         # Guard against re-entrant undo/redo while processEvents() runs mid-step.
         self._undo_redo_busy = False
 
@@ -280,6 +281,10 @@ class UpdateManager:
     @transaction_id.setter
     def transaction_id(self, value):
         self._tls.transaction_id = value
+        if value:
+            self._open_transactions[threading.get_ident()] = value
+        else:
+            self._open_transactions.pop(threading.get_ident(), None)
 
     @property
     def ignore_history(self):
@@ -360,12 +365,18 @@ class UpdateManager:
         return [a for a in history if a.transaction in kept]
 
     def _trim_history(self):
-        """Drop undo steps older than the last MEMORY_STEPS, once per new step (not per action of one)."""
+        """Drop undo steps older than the last MEMORY_STEPS, once per new step (not per action of one).
+
+        Only off the front, so a history_mark stays right, and never a step still
+        open on some thread: its later actions would be undone without its first.
+        """
         history = self.actionHistory
         if len(history) > self.MEMORY_STEPS and (len(history) < 2 or history[-1].transaction != history[-2].transaction):
-            kept = self._last_steps(history, self.MEMORY_STEPS)
-            self.trimmed += len(history) - len(kept)
-            history[:] = kept
+            kept = {a.transaction for a in self._last_steps(history, self.MEMORY_STEPS)}
+            kept.update(list(self._open_transactions.values()))
+            cut = next(i for i, a in enumerate(history) if a.transaction in kept)
+            self.trimmed += cut
+            del history[:cut]
 
     def history_mark(self):
         """Where actionHistory ends now, as a mark that stays right after the undo limit trims its front."""
