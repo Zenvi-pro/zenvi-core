@@ -156,7 +156,7 @@ def test_a_word_cannot_close_the_script_element():
 
 
 def test_a_word_does_not_stay_lit_through_a_pause():
-    # Whisper stretches a word across the silence after it; the highlight then runs through the pause.
+    # A recogniser stretches a word across the silence after it; the highlight then runs through the pause.
     words = [{"text": "breaks", "start": 3.88, "end": 4.4}, {"text": "between", "start": 4.46, "end": 5.68},
              {"text": "work", "start": 5.68, "end": 5.92}, {"text": "late", "start": 6.3, "end": 6.9}]
     out = cap.trim_to_speech(words, [(4.68, 5.37), (6.08, 6.67), (9.0, 9.1)])

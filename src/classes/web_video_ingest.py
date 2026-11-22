@@ -284,7 +284,7 @@ def humanize_ingest_failure(exc: BaseException) -> str:
     if "ffmpeg" in low or "ffprobe" in low:
         return (
             "Pull needs ffmpeg to combine YouTube video+audio. "
-            "Install ffmpeg (e.g. brew install ffmpeg) and try again, or upload an MP4 yourself."
+            "Install ffmpeg (or set ZENVI_FFMPEG_DIR) and try again, or upload an MP4 yourself."
         )
     if any(
         x in low
