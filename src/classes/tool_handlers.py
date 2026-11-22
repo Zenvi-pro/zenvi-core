@@ -6183,6 +6183,35 @@ def get_timeline_state(detail_level="summary", **_kw) -> str:
         return f"Error: {e}"
 
 
+def _selection_snapshot_lines() -> str:
+    """The current selection (first 6 items, one line each) and the playhead.
+
+    Item lines keep ui_track= and stay under 120 characters: the backend's timeline
+    digest passes such a line through unchanged and drops or rewrites other shapes.
+    """
+    lines = []
+    try:
+        from classes.editor_tools._base import describe_clip
+        from classes.editor_tools.tracks_nav import _describe_selection, _player_state, _selection_pairs
+        from classes.query import Clip
+
+        def token(value):  # project-file text must not break out of its line or the block
+            return re.sub(r"[^A-Za-z0-9_-]", "", str(value))[:40]
+
+        pairs = _selection_pairs()
+        sel = _describe_selection(pairs[:6])  # select-all on a long timeline stays cheap
+        rows = [(f"clip id={token(c['timeline_clip_id'])}", c) for c in sel["clips"]]
+        rows += [(f"transition id={token(t['transition_id'])}", t) for t in sel["transitions"]]
+        rows += [(f"effect id={token(e['effect_id'])} class={token(e['class_name'])[:24]} clip id={token(e['timeline_clip_id'])}",
+                  describe_clip(Clip.get(id=e["timeline_clip_id"]))) for e in sel["effects"]]
+        lines = [f"SELECTED {i}/{len(pairs)}: {what} ui_track={r['track']} @ {r['position']:.2f}s-{r['end']:.2f}s"
+                 for i, (what, r) in enumerate(rows, 1)] or ["SELECTED: nothing"]
+        lines.append(f"PLAYHEAD: {_player_state()['seconds']:.2f}s")
+    except Exception as e:
+        log.debug("selection snapshot: %s", e)
+    return "".join(f"{ln}\n" for ln in lines)
+
+
 def build_editor_snapshot_for_chat(max_chars: int = 5500) -> str:
     """Compact media-bin + timeline for LLM grounding. Call from Qt GUI thread.
 
@@ -6218,7 +6247,7 @@ def build_editor_snapshot_for_chat(max_chars: int = 5500) -> str:
             f"Project files count: {n_visible}\n"
             f"NOTE: media-bin files exist independently of the timeline; "
             f"an empty timeline does NOT mean no project files.\n"
-        )
+        ) + _selection_snapshot_lines()
         if media_lines:
             # Cap listing so snapshot stays within max_chars with timeline.
             shown = media_lines[:20]
