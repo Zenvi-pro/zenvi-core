@@ -83,6 +83,22 @@ def test_energy_vad_continuous_speech_has_no_silence(tmp_path, layout):
     ) == []
 
 
+def test_energy_vad_keeps_a_pause_whose_room_noise_is_under_20_db_below_the_voice(tmp_path):
+    """On purpose: -20 dB voice over -35 dB room. Nothing is cut rather than risk soft speech."""
+    rng = random.Random(7)
+    wav = tmp_path / "noisy.wav"
+    samples = [int(32767 * rng.gauss(0.0, 0.1 if (i // RATE) % 5 < 3 else 0.018)) for i in range(10 * RATE)]
+    with wave.open(str(wav), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(RATE)
+        wf.writeframes(struct.pack("<%dh" % len(samples), *(max(-32768, min(32767, s)) for s in samples)))
+    speech = EnergyVad().speech_windows(
+        str(wav), token=CancelToken(), min_speech_sec=0.12, min_silence_sec=0.4,
+    )
+    assert silence_ranges_from_speech(speech, duration=10.0, min_pause_sec=0.4, pad_sec=0.08) == []
+
+
 def test_energy_vad_digital_silence_has_no_speech(tmp_path):
     wav = tmp_path / "silent.wav"
     with wave.open(str(wav), "wb") as wf:

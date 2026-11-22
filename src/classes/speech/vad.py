@@ -89,6 +89,8 @@ class EnergyVad:
         # quietest 10% is soft speech, not the room, so never set it closer
         # than _VOICE_RANGE_DB under the voice. Digitally silent stretches are
         # left out of the measure so they cannot drag the floor down.
+        # On purpose: a pause under 20 dB below the voice is kept. Audio cannot
+        # tell it from soft speech, and cutting speech is the worse mistake.
         db = [20.0 * math.log10(max(e, 1e-9)) for e in energies]
         ranked = sorted(d for d in db if d > _SILENT_DB)
         if not ranked:
