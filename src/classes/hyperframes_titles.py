@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 SOURCE = "hyperframes_title"          # ai_metadata.source of a title file; ai_metadata.title holds its spec
 GSAP = "https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"
@@ -58,6 +59,7 @@ ZONES = ("top", "center", "bottom")
 _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$")
 _FONT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$")
 ROLL_LINES = 6            # more lines than this roll instead of fading in place
+MIN_ANIMATED = 0.2        # a title shorter than this (seconds) is a still: no room to come in and go out
 
 
 class TitleError(Exception):
@@ -131,6 +133,7 @@ def spec(style: str, title: str = "", subtitle: str = "", lines: Optional[List[s
         title, subtitle = "", ""
     elif lines:
         title, subtitle = (("\n".join(lines), "") if style == "bold_box" else (lines[0], " ".join(lines[1:])))
+        lines = []
     elif "\n" in title and style != "bold_box":
         # 'Jane Doe\nFounder': the second line is the subtitle, as in a lower third's name and role
         first, rest = title.split("\n", 1)
@@ -161,8 +164,11 @@ def _safe(width: int, height: int) -> Dict[str, float]:
     return {"x": width * 0.07, "top": height * (0.09 if tall else 0.08), "bottom": height * (0.16 if tall else 0.09)}
 
 
-def _body(s: Dict, u: float) -> (str, str):
-    """(HTML, GSAP script) of the title's own layer; *u* px is 1/1080 of the frame's short side."""
+def _body(s: Dict, u: float, room: Dict[str, float]) -> Tuple[str, str, str]:
+    """(HTML, entrance, exit) of the title's own layer; *u* px is 1/1080 of the frame's short side.
+
+    *room* is the title-safe area in px.
+    """
     style, k = s["style"], s["font_scale"]
     title, sub = s["title"], s["subtitle"]
     px = lambda n: _num(n * u * k)                                       # noqa: E731
@@ -233,10 +239,14 @@ def _body(s: Dict, u: float) -> (str, str):
         html_ = '<div class="stack center roll">%s</div>' % "".join(
             '<p class="c" style="font-size:%spx;margin:%spx 0">%s</p>' % (px(size), px(size * 0.32), html.escape(r))
             for r in rows)
-        if len(rows) > ROLL_LINES:
-            # the roll is the whole title: it runs on the main clock (exit), never sped up with the entrance
+        row_px = size * u * k
+        tall = sum(1.2 * math.ceil(max(1, len(r)) * 0.6 * row_px / room["width"]) + 0.64 for r in rows) * row_px
+        if len(rows) > ROLL_LINES or tall > room["height"]:
+            # the roll is the whole title: it runs on the main clock (exit), never sped up with the entrance.
+            # Measured where it rests: in from under the frame, out over its top, in every zone.
             js = ""
-            exit_ = 'tl.fromTo(".roll",{yPercent:0,y:H*0.55},{yPercent:-100,y:-H*0.55,duration:END,ease:"none"},0);'
+            exit_ = ('tl.fromTo(".roll",{y:function(i,el){return H-el.offsetTop}},'
+                     '{y:function(i,el){return -(el.offsetTop+el.offsetHeight)},duration:END,ease:"none"},0);')
         else:
             js = 'tl.fromTo(".c",{opacity:0,y:%s},{opacity:1,y:0,duration:0.6,ease:"power3.out",stagger:0.18},0.1);' \
                  % px(20)
@@ -255,7 +265,10 @@ def compile_composition(s: Dict, width: int, height: int, duration: float, fps: 
     accent = _css_colour(s["accent_color"] or ("#ffffff" if s["style"] == "bold_box" else "#ffd166"))
     background = s["background_color"] or ("#0b0b0f" if entry.get("full_frame") else "")
     justify = {"top": "flex-start", "center": "center", "bottom": "flex-end"}[s["zone"]]
-    body, intro, exit_ = _body(s, u) if (s["title"] or s["subtitle"] or s["lines"]) else ("", "", "")
+    room = {"width": width - 2 * safe["x"], "height": height - safe["top"] - safe["bottom"]}
+    body, intro, exit_ = _body(s, u, room) if (s["title"] or s["subtitle"] or s["lines"]) else ("", "", "")
+    if duration < MIN_ANIMATED:
+        intro = exit_ = ""
     outro = _num(min(0.5, max(duration * 0.2, 0.0)))
     css = """
 *{margin:0;padding:0;box-sizing:border-box}
@@ -294,7 +307,7 @@ html,body{width:%(w)dpx;height:%(h)dpx;overflow:hidden;background:transparent}
     # The entrance is its own timeline, sped up on a short title so it ends before the exit starts.
     script = ("var END=%s,OUT=%s,H=%d;window.__timelines=window.__timelines||{};"
               "var main=gsap.timeline({paused:true});var intro=gsap.timeline();%s"
-              "intro.timeScale(Math.max(1,intro.duration()/Math.max(0.05,END-OUT)));main.add(intro,0);%s"
+              "intro.timeScale(Math.max(1,intro.duration()/(END-OUT)));main.add(intro,0);%s"
               "main.set({},{},END);window.__timelines[\"zenvi-title\"]=main;main.seek(0);") % (
         _num(duration), outro, height, intro.replace("tl.", "intro."), exit_.replace("tl.", "main."))
     return """<!doctype html>

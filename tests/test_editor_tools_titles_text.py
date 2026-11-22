@@ -330,8 +330,10 @@ def test_edit_to_an_opaque_card_carries_the_new_files_probe(tt, hft):
     rec = receipt(tt.call("add_title_tool", text="Thanks"))
     edit = receipt(tt.call("edit_title_tool", timeline_clip_id=rec["timeline_clip_id"], style="end_card"))
     assert edit["path"].endswith(".mp4")
-    assert tt.clip(rec["timeline_clip_id"])["reader"] == {k: v for k, v in tt.file(edit["file_id"]).items()
-                                                          if k in tt.clip(rec["timeline_clip_id"])["reader"]}
+    reader, new = tt.clip(rec["timeline_clip_id"])["reader"], tt.file(edit["file_id"])
+    assert reader["path"] == edit["path"]
+    for field in ("duration", "width", "height", "fps", "has_video"):
+        assert reader[field] == new[field]
 
 
 def test_font_scale_on_edit_is_kept_in_range(tt, hft):
@@ -434,6 +436,49 @@ def test_this_clip_edit_leaves_a_clip_added_during_the_render_alone(tt, hft, mon
                            text="Day 2"))
     assert edit["timeline_clip_ids"] == [rec["timeline_clip_id"]] and edit["scope"] == "this_clip"
     assert tt.clip(added[0])["file_id"] == rec["file_id"]
+
+
+def test_a_title_is_not_placed_in_a_project_opened_during_the_render(tt, hft, monkeypatch):
+    from classes.handoff import linked_media
+    _during_render(monkeypatch, lambda: monkeypatch.setattr(linked_media, "project_token", lambda: -1))
+    tt.mark()
+    out = tt.call("add_title_tool", text="Intro")
+    assert out.startswith("Error") and "another project" in out and tt.undo_steps_since_mark() == 0
+    assert os.listdir(tt.tmp_path / "title") == []
+
+
+def test_an_edit_whose_title_was_replaced_meanwhile_is_refused(tt, hft, monkeypatch):
+    rec = receipt(tt.call("add_title_tool", text="Day 1"))
+    inner = []
+    _during_render(monkeypatch, lambda: inner.append(
+        receipt(tt.call("edit_title_tool", file_id=rec["file_id"], text="Day 2"))))
+    out = tt.call("edit_title_tool", file_id=rec["file_id"], text="Day 3")
+    assert out.startswith("Error") and "was replaced" in out
+    assert tt.clip(rec["timeline_clip_id"])["file_id"] == inner[0]["file_id"]
+    assert os.path.exists(inner[0]["path"])
+
+
+def test_a_commit_that_fails_half_way_is_taken_back_with_its_file(tt, hft, monkeypatch):
+    from classes.editor_tools import titles_text
+    rec = receipt(tt.call("add_title_tool", text="Day 1"))
+    monkeypatch.setattr(titles_text, "refresh_file_and_clips", lambda *a, **k: 1 / 0)
+    tt.mark()
+    assert tt.call("edit_title_tool", file_id=rec["file_id"], text="Day 2").startswith("Error")
+    assert tt.clip(rec["timeline_clip_id"])["file_id"] == rec["file_id"] and tt.file(rec["file_id"])
+    assert os.listdir(tt.tmp_path / "title") == [os.path.basename(rec["path"])]
+    assert tt.undo_steps_since_mark() == 0
+
+
+def test_a_look_only_edit_keeps_credit_entries_and_auto_resets_the_place(tt, hft):
+    entries = ["Camera\nJane", "B", "C", "D", "E", "F"]
+    rec = receipt(tt.call("add_title_tool", style="credits", lines=entries))
+    edit = receipt(tt.call("edit_title_tool", file_id=rec["file_id"], font="Georgia"))
+    assert edit["fields"]["lines"] == entries
+    head = receipt(tt.call("add_title_tool", text="Hi", screen_position="bottom", position_seconds=20))
+    kept = receipt(tt.call("edit_title_tool", file_id=head["file_id"], text="Ho"))
+    assert tt.file(kept["file_id"])["ai_metadata"]["title"]["zone"] == "bottom"
+    back = receipt(tt.call("edit_title_tool", file_id=kept["file_id"], screen_position="auto"))
+    assert tt.file(back["file_id"])["ai_metadata"]["title"]["zone"] == "center"
 
 
 def test_svg_title_edits_refuse_hyperframes_only_changes(tt):

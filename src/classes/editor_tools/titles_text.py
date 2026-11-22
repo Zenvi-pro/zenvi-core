@@ -32,13 +32,14 @@ import os
 import re
 import shutil
 import time
+import uuid
 from typing import Dict, List
 
 from classes import hyperframes_local as hf
 from classes import hyperframes_titles as ht
 from classes import title_svg
 from classes.editor_tools._base import (
-    ToolError, array, enum, is_locked, number, obj, ok, project_fps, selected_clip_ids,
+    ToolError, array, enum, get_app, is_locked, number, obj, ok, project_fps, selected_clip_ids,
     snap_seconds, string, th, ui_track_number,
 )
 from classes.editor_tools._registry import editor_tool
@@ -238,11 +239,12 @@ def _render_title(s: dict, size, fps: float, duration: float, out_path: str) -> 
 
     *out_path* is the reserved empty file; a failed render removes it.
     """
-    project = "title-%d" % time.time_ns()
-    done = False
+    project = "title-%d-%s" % (time.time_ns(), uuid.uuid4().hex[:8])
+    done = owned = False
     try:
         root = hf.project_dir(project)
         os.makedirs(root)
+        owned = True
         with open(os.path.join(root, "index.html"), "w", encoding="utf-8") as fh:
             fh.write(ht.compile_composition(s, size[0], size[1], duration, fps))
         opaque = ht.is_opaque(s)
@@ -269,7 +271,8 @@ def _render_title(s: dict, size, fps: float, duration: float, out_path: str) -> 
     finally:
         if not done:
             _discard(out_path)
-        shutil.rmtree(hf.project_dir(project), ignore_errors=True)
+        if owned:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -445,11 +448,13 @@ def add_title(text="", subtitle="", lines=None, style=ht.DEFAULT_STYLE, font="",
         raise ToolError(f"duration_seconds must be at least one frame ({1.0 / fps:.3f}s)")
     end = position + duration
 
+    from classes.handoff import linked_media
+
     def _precheck():
         plan_overlay_track(position, end, track)        # where it goes (a refused call renders nothing)
-        return project_size(), _project_paths()
+        return project_size(), _project_paths(), linked_media.project_token()
 
-    size, taken = precheck_on_main(_precheck)
+    size, taken, opened = precheck_on_main(_precheck)
     if not hf.status()["ready"]:
         raise ToolError(SETUP_HINT)
     opaque = ht.is_opaque(s)
@@ -460,6 +465,8 @@ def add_title(text="", subtitle="", lines=None, style=ht.DEFAULT_STYLE, font="",
     moved = []
 
     def _commit():
+        if linked_media.project_token() != opened:
+            raise ToolError("another project was opened while the title rendered; nothing was added")
         layer, created = plan_overlay_track(position, end, track, moved=moved)
         f = import_media_file(out_path, extra={"ai_metadata": ai})
         if created:
@@ -467,13 +474,7 @@ def add_title(text="", subtitle="", lines=None, style=ht.DEFAULT_STYLE, font="",
         clip = place_clip(f.id, position, duration, layer)
         return f.id, clip, layer, created
 
-    try:
-        file_id, clip, layer, created = commit_on_main(_commit)
-    except CommitTimeout:
-        raise                    # it may still finish: keep its render
-    except Exception:
-        _discard(out_path)
-        raise
+    file_id, clip, layer, created = _commit_or_discard(_commit, out_path)
     label = ht.STYLES[s["style"]]["label"]
     t = track_info(layer)
     warnings = list(moved)
@@ -586,15 +587,14 @@ def _edited_spec(old: dict, text, subtitle, lines, style, font, font_scale, text
                  background_color, screen_position) -> dict:
     """*old* with only what was passed changed (font_scale multiplies the current size)."""
     new_style = style or old["style"]
-    if lines:
+    if not lines and not text.strip() and not subtitle.strip() and new_style == old["style"]:
+        title, sub, lines = old["title"], old["subtitle"], old["lines"]
+    elif lines:
         title, sub = "", ""
     else:
         title = text if text.strip() else (old["title"] or "\n".join(old["lines"]))
         sub = subtitle if subtitle.strip() else ("" if "\n" in text else old["subtitle"])
-    if screen_position not in ("", "auto"):
-        zone = screen_position
-    else:
-        zone = old["zone"] if new_style == old["style"] else ""
+    zone = screen_position or (old["zone"] if new_style == old["style"] else "")   # "auto": the style's own place
     return _spec(new_style, title, sub, lines, text_color or old["text_color"],
                  accent_color or old["accent_color"], background_color or old["background_color"],
                  font or old["font"], max(0.2, min(5.0, old["font_scale"] * float(font_scale or 1.0))), zone)
@@ -610,6 +610,9 @@ def _commit_edit(f, scope, clip_id, out_path, src_path, extra=None, replace=Fals
     """
     from classes.media_fingerprint import fingerprint
     from classes.query import Clip, File
+    if not File.get(id=f.id):
+        raise ToolError("the title was replaced, or another project opened, while this edit rendered; nothing "
+                        "changed -- try again with the current title")
     clips, scope_used = _clips_of(f.id), scope
     if scope == "this_clip":
         mine = [c for c in clips if c.id == clip_id]
@@ -671,8 +674,19 @@ def _refuse_locked(clips) -> None:
 
 
 def _commit_or_discard(func, out_path):
+    """*func* on the GUI thread, all or nothing: what a failed commit saved is taken back before its file goes."""
+    def whole():
+        from classes.handoff.hyperframes.importer import _rollback
+        updates = get_app().updates
+        mark, redo = updates.history_mark(), list(updates.redoHistory)
+        try:
+            return func()
+        except Exception:
+            _rollback(updates, mark, redo)
+            raise
+
     try:
-        return commit_on_main(func)
+        return commit_on_main(whole)
     except CommitTimeout:
         raise                    # it may still finish: keep its file
     except Exception:
@@ -696,7 +710,9 @@ def _commit_or_discard(func, out_path):
                font_scale=number("Text size vs now (1 = unchanged).", 1.0, minimum=0.2, maximum=5.0),
                text_color=string("New text colour ('#RRGGBB[AA]', rgba() or a name). Empty keeps it.", ""),
                accent_color=string("New rule, bar or box colour (HyperFrames titles). Empty keeps it.", ""),
-               background_color=string("New full-frame background, alpha allowed. Empty keeps it.", "")),
+               background_color=string("New full-frame background, alpha allowed. Empty keeps it.", ""),
+               screen_position=enum([""] + list(SCREEN_POSITIONS), "Where the text sits; auto = the style's own "
+                                    "place. Empty keeps it (a new style uses its own place).", "")),
         "scope": enum(["all_clips", "this_clip", "duplicate"],
                       "all_clips = every clip using the title (Edit Title); this_clip = only timeline_clip_id, "
                       "as its own copy; duplicate = save the edit as a new Project Files title, no clip changes "
@@ -707,7 +723,7 @@ def _commit_or_discard(func, out_path):
 )
 def edit_title(timeline_clip_id="", file_id="", title_query="", text="", subtitle="", lines=None, style="",
                font="", font_scale=1.0, text_color="", accent_color="", background_color="",
-               screen_position="auto", scope="all_clips"):
+               screen_position="", scope="all_clips"):
     """Use for changing the text, style, font or colours of an existing title, or duplicating it. Not for adding a new title (run_tool(name='add_title_tool')).
     Change an existing title's text, style, font or colours, or duplicate it.
 
@@ -722,7 +738,8 @@ def edit_title(timeline_clip_id="", file_id="", title_query="", text="", subtitl
     subtitle = str(subtitle or "")
     style = str(style or "").strip()
     has_text = bool(text.strip() or subtitle.strip() or lines)
-    looks = bool(style or str(accent_color or "").strip() or screen_position not in ("", "auto"))
+    accent_color, screen_position = str(accent_color or "").strip(), str(screen_position or "").strip()
+    looks = bool(style or accent_color or screen_position)
     svg_style = _Style(font, font_scale, text_color, background_color)
     if not has_text and not looks and not svg_style.changes_anything and scope != "duplicate":
         raise ToolError("nothing to change: pass text, subtitle, lines, style, font, colours or font_scale "
@@ -745,7 +762,7 @@ def edit_title(timeline_clip_id="", file_id="", title_query="", text="", subtitl
     if old:
         return _edit_hyperframes(f, old, clip_id, scope, scope_used, src_path, size, taken, text, subtitle, lines, style,
                                  font, font_scale, text_color, accent_color, background_color, screen_position)
-    if looks:
+    if style or accent_color or screen_position not in ("", "auto"):
         raise ToolError("this is an SVG title from the Title Editor: style, accent_color and screen_position only "
                         "apply to HyperFrames titles; make one with run_tool(name='add_title_tool') instead")
     return _edit_svg(f, clip_id, scope, scope_used, src_path, taken, families, svg_style, text, subtitle, lines,

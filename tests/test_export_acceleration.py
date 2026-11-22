@@ -53,8 +53,9 @@ from classes.export_acceleration.export_pipeline import (
 
 
 def test_export_cache_bytes_scales_with_resolution():
-    hd = export_cache_bytes(1280, 720)
-    uhd = export_cache_bytes(3840, 2160)
+    ram = 64 * 1024 ** 3  # not this machine's: the cap follows it
+    hd = export_cache_bytes(1280, 720, ram=ram)
+    uhd = export_cache_bytes(3840, 2160, ram=ram)
     assert hd >= 256 * 1024 * 1024
     assert uhd > hd
     assert uhd <= 2 * 1024 * 1024 * 1024

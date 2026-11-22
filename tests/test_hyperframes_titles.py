@@ -43,7 +43,8 @@ def test_spec_fields_follow_the_style():
     assert box["title"] == "I tried this\nfor 30 days" and box["subtitle"] == ""
     credits = ht.spec("credits", title="Director\nJane", subtitle="Music: Bob")
     assert credits["lines"] == ["Director", "Jane", "Music: Bob"] and credits["title"] == ""
-    assert ht.spec("headline", lines=["One", "Two", "Three"])["subtitle"] == "Two Three"
+    h = ht.spec("headline", lines=["One", "Two", "Three"])
+    assert (h["title"], h["subtitle"], h["lines"]) == ("One", "Two Three", [])
     assert ht.spec("kicker", title="x")["zone"] == "top" and ht.spec("kicker", title="x", zone="bottom")["zone"] == "bottom"
 
 
@@ -79,8 +80,12 @@ def test_vertical_frames_keep_text_out_of_the_platform_bands():
 
 def test_long_credits_roll_and_title_spec_reads_back():
     rows = ["Line %d" % i for i in range(ht.ROLL_LINES + 2)]
-    assert "yPercent:-100" in ht.compile_composition(ht.spec("credits", lines=rows), 1920, 1080, 8.0)
-    assert "yPercent:-100" not in ht.compile_composition(ht.spec("credits", lines=rows[:3]), 1920, 1080, 8.0)
+    roll = ht.compile_composition(ht.spec("credits", lines=rows, zone="bottom"), 1920, 1080, 8.0)
+    # in from under the frame, out over its top, wherever it rests
+    assert "y:function(i,el){return H-el.offsetTop}" in roll and "return -(el.offsetTop+el.offsetHeight)" in roll
+    assert '.fromTo(".roll"' not in ht.compile_composition(ht.spec("credits", lines=rows[:3]), 1920, 1080, 8.0)
+    # few entries too big for the frame roll as well
+    assert '.fromTo(".roll"' in ht.compile_composition(ht.spec("credits", lines=rows[:6], font_scale=5), 1080, 1920, 8.0)
     s = ht.spec("headline", title="x")
     assert ht.title_spec({"ai_metadata": {"source": ht.SOURCE, "title": s}}) == s
     assert ht.title_spec({"ai_metadata": {"source": "hyperframes_captions"}}) is None
@@ -91,7 +96,10 @@ def test_a_short_title_plays_its_entrance_before_its_exit():
     s = ht.spec("lower_third", title="Jane", subtitle="Host")
     short = ht.compile_composition(s, 1920, 1080, 1.0)
     # The entrance is its own timeline, sped up to end before the exit starts at END-OUT.
-    assert "intro.timeScale(Math.max(1,intro.duration()/Math.max(0.05,END-OUT)))" in short
+    assert "intro.timeScale(Math.max(1,intro.duration()/(END-OUT)))" in short
+    # no room to come in and go out: a still
+    still = ht.compile_composition(s, 1920, 1080, 1 / 30.0)
+    assert ".fromTo(" not in still and "Jane" in still
     assert "main.add(intro,0)" in short and 'window.__timelines["zenvi-title"]=main' in short
     rows = ["Line %d" % i for i in range(ht.ROLL_LINES + 2)]
     roll = ht.compile_composition(ht.spec("credits", lines=rows), 1920, 1080, 8.0)

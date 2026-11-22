@@ -117,6 +117,15 @@ def test_a_transaction_still_open_on_another_thread_is_not_trimmed():
     assert len(manager.actionHistory) == 3
 
 
+def test_the_trim_never_splits_a_step_that_interleaves_with_a_kept_one():
+    manager = UpdateManager()
+    manager.MEMORY_STEPS = 2
+    for n, tid in enumerate(("A", "B", "A", "C", "B")):
+        _edit(manager, n, transaction=tid)
+        manager._open_transactions = {-1: "B"}  # still open on another thread
+    assert [a.transaction for a in manager.actionHistory] == ["A", "B", "A", "C", "B"]
+
+
 def test_a_long_transaction_is_not_rescanned_for_every_action():
     manager = UpdateManager()
     manager.MEMORY_STEPS = 5

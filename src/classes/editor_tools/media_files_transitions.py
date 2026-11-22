@@ -22,6 +22,7 @@ edge" -> contrast=20; "play it backwards" -> reverse=true.
 from __future__ import annotations
 
 import copy
+import math
 import os
 import random
 
@@ -810,11 +811,13 @@ def add_transitions_between_clips(track="", timeline_clip_ids=None, transition="
             if chosen_ids is not None and c.id not in chosen_ids:
                 continue
             c_len = end[c.id] - start[c.id]
-            d = max(frame, int(min(length, c_len) * fps + 1e-9) / fps)  # whole frames, never past the clip
-            at = pos[c.id] if placement == "start" else int((pos[c.id] + c_len) * fps + 1e-9) / fps - d
+            # whole frames inside the clip, also when the clip itself is off the frame grid
+            lo, hi = math.ceil(pos[c.id] * fps - 1e-6), int((pos[c.id] + c_len) * fps + 1e-6)
+            n = max(1, min(int(min(length, c_len) * fps + 1e-9), hi - lo))
+            d, at = n / fps, (lo if placement == "start" else hi - n) / fps
             on_edge = [t for t in existing if tpos[t.id] < at + d - EPS
                        and tpos[t.id] + _span(t.data)[1] - _span(t.data)[0] > at + EPS]
-            if c_len < 2 * frame:
+            if c_len < 2 * frame or hi <= lo:
                 skipped.append({"join": c.id, "reason": "clip too short"})
             elif on_edge and not replace_existing:
                 skipped.append({"join": c.id, "reason": "already has a transition"})
@@ -894,10 +897,9 @@ def add_transitions_between_clips(track="", timeline_clip_ids=None, transition="
     # Apply: clip edits, shifted transitions, replaced transitions, new transitions.
     moved = []
     for c in clips:
-        new_pos = snap_seconds(max(0.0, pos[c.id]))
         changes = {}
-        if abs(new_pos - float(c.data.get("position") or 0.0)) > EPS:
-            changes["position"] = new_pos
+        if abs(pos[c.id] - float(c.data.get("position") or 0.0)) > EPS:  # the plan moved it
+            changes["position"] = snap_seconds(max(0.0, pos[c.id]))
         if abs(start[c.id] - float(c.data.get("start") or 0.0)) > EPS:
             changes["start"] = start[c.id]
         if abs(end[c.id] - float(c.data.get("end") or 0.0)) > EPS:

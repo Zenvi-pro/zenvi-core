@@ -118,6 +118,21 @@ def test_an_edge_fade_on_a_short_clip_stays_inside_the_clip(tl, placement):
     assert added["position"] >= 2.0 - 1e-9 and added["position"] + length <= 2.12 + 1e-9
 
 
+def test_an_edge_fade_on_an_off_grid_clip_stays_inside_it_and_moves_nothing(tl):
+    from classes.query import Clip
+    f = tl.add_file("video", duration=30.0)
+    c = tl.add_clip(f, position=0.02, end=4 / 30.0)
+    live = Clip.get(id=c)
+    live.data = {"position": 0.02}
+    live.save()
+    receipt = tl.call_receipt("add_transitions_between_clips_tool", timeline_clip_ids=[c], placement="end",
+                              transition="fade", duration_seconds=1.0)
+    assert receipt["status"] == "applied", receipt
+    (added,) = _added_on(tl, L1)
+    assert added["position"] >= 0.02 and added["position"] + added["end"] <= 0.02 + 4 / 30.0 + 1e-6
+    assert tl.clip(c)["position"] == 0.02
+
+
 def test_a_transition_that_only_touches_an_edge_fade_does_not_occupy_it(tl):
     f = tl.add_file("video", duration=30.0)
     tl.add_clip(f, position=0.0, end=5.0)
