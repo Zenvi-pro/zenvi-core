@@ -69,7 +69,8 @@ def _main_thread_timeout(tool_name: str, tool_args: dict) -> int:
 
 def _history_len(app) -> int:
     try:
-        return len(app.updates.actionHistory)
+        # Plus what the undo limit trimmed, so a new action counts even when the length stays flat.
+        return len(app.updates.actionHistory) + int(getattr(app.updates, "trimmed", 0))
     except Exception:
         return -1
 
