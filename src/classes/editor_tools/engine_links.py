@@ -5,15 +5,15 @@ Zenvi FX renders (``zenvi-fx``) are Project Files whose media is a render of a
 spec kept on the file record, ``files[].zenvi_link`` (the record of
 handoff-core's ``classes/handoff/linked_media.py``: kind, version, source,
 props, render, state, error). The engine wrote them, so the engine re-renders
-them: ``rerender_linked_clip_tool`` runs the kind's own engine tool (ENGINE_KINDS)
+them: ``update_linked_clip_tool`` runs the kind's own engine tool (ENGINE_KINDS)
 through the bridge, which swaps the render into the same bin file as one undo
 step, and answers ``unchanged`` when the new render is the one already there.
 
-The desktop's own ``get_linked_clip_tool`` / ``rerender_linked_clip_tool``
+The desktop's own ``get_linked_clip_tool`` / ``update_linked_clip_tool``
 (``editor_tools/handoff.py``: Remotion, HyperFrames, After Effects) hand these
 kinds here (``is_engine_kind``) instead of looking for a render provider -- the
 engine's re-render is a whole tool call (new file record, clips that follow a
-longer render), not a file written into a staging folder. The tools below are
+longer render), not a file written into a staging folder. GET_TOOL below is
 listed only in a build without the desktop's own.
 """
 
@@ -66,21 +66,6 @@ GET_TOOL = {
     "desktop": True,
 }
 
-RERENDER_TOOL = {
-    "name": "rerender_linked_clip_tool",
-    "title": "Re-render linked clip",
-    "description": (
-        "Re-render a Zenvi Motion block, Zenvi 3D scene or Zenvi FX clip from its stored spec with this Zenvi "
-        "engine (after an engine update, or when its render file is gone) and swap it into every clip that uses "
-        "it, as one undo step. To change props instead use update_motion_block_tool, rerender_3d_scene_tool or "
-        "update_fx_tool. Answers unchanged when the render would be identical; a failed render changes nothing."),
-    "inputSchema": _TARGET,
-    "annotations": {"title": "Re-render linked clip", "readOnlyHint": False, "destructiveHint": False,
-                    "openWorldHint": False},
-    "desktop": True,
-}
-
-
 def is_engine_kind(kind) -> bool:
     # Exactly as rerender() looks the kind up: a spelling it would refuse is not an engine kind.
     return isinstance(kind, str) and kind in ENGINE_KINDS
@@ -90,7 +75,7 @@ def desktop_tools(bridged, existing) -> list:
     """(catalog entry, handler) of the linked-clip tools the desktop lacks, when the engine can re-render a kind."""
     if not any(k.rerender_tool in bridged for k in ENGINE_KINDS.values()):
         return []
-    tools = [(GET_TOOL, get_linked_clip), (RERENDER_TOOL, rerender_linked_clip)]
+    tools = [(GET_TOOL, get_linked_clip)]
     return [(tool, run) for tool, run in tools if tool["name"] not in existing]
 
 
@@ -170,7 +155,7 @@ def get_linked_clip(clip_id: str = "", file_id: str = "") -> str:
     if info["kind"] not in ENGINE_KINDS:
         info["detail"] = (f"{info['kind']} links are re-rendered by Zenvi's linked-clip support, which this build "
                           "does not have")
-    missing = "" if info["render_present"] else "; its render file is missing (rerender_linked_clip_tool)"
+    missing = "" if info["render_present"] else "; its render file is missing (update_linked_clip_tool)"
     return ok(f"{info['kind_label']} clip {info['name']!r} is {info['state']}{missing}.", **info)
 
 

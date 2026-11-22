@@ -48,6 +48,10 @@ RETIRED = {
     "match_reference_tool": "plan_recreation_tool",
     "compare_recreation_tool": "check_recreation_tool",
     "set_project_profile_tool": "set_project_setting_tool",
+    "reverse_transition_tool": "update_transition_tool",
+    "import_timeline_xml_tool": "import_project_file_tool",
+    "list_recent_projects_tool": "open_project_tool",
+    "rerender_linked_clip_tool": "update_linked_clip_tool",
 }
 
 
@@ -64,7 +68,7 @@ def _props(name):
 
 
 # Shipped backends still call this one. It stays callable and out of the prompt.
-_SHIPPED_BACKEND = {"get_clips_with_full_metadata_tool"}
+_SHIPPED_BACKEND = {"get_clips_with_full_metadata_tool", "apply_transition_tool"}
 
 
 def test_retired_tools_are_gone_everywhere():
@@ -97,6 +101,13 @@ def test_merged_tools_took_over_the_retired_arguments():
     assert "from_file_id" in props and "preset" not in props
     # detect_beats_tool took timeline clips; analyze_music_tool now does.
     assert "timeline_clip_id" in _props("analyze_music_tool")
+    # reverse_transition_tool became update_transition_tool(reverse=true).
+    assert "reverse" in _props("update_transition_tool")
+    # apply_transition_tool's placement moved onto add_transitions_between_clips_tool.
+    assert "placement" in _props("add_transitions_between_clips_tool")
+    # import_timeline_xml_tool's placement and sequence moved onto import_project_file_tool.
+    props = _props("import_project_file_tool")
+    assert "placement" in props and "sequence" in props
 
 
 def test_no_source_names_a_retired_tool():

@@ -586,7 +586,7 @@ def _place_overlays(clip, caption_file, subject, start, duration, project, out_r
 )
 def add_captions(timeline_clip_id="", clip_query="", style=cap.DEFAULT_STYLE, behind_subject=False, text="",
                  whole_project=False):
-    """Add animated captions of what is said in a clip, word-timed, as an overlay on a track above it.
+    """Use for word-timed captions (subtitles) of speech in a clip. Not for word-by-word reel captions or SRT/VTT files (find_tools).
 
     The words come from Zenvi's on-device transcript of the clip, the look from a
     HyperFrames caption style (karaoke pill, highlight sweep, kinetic slam, ...),
@@ -663,7 +663,7 @@ def _caption_project(style: str, behind_subject: bool):
     covers=("caption.edit",),
 )
 def list_captions():
-    """List the caption styles that can be used and the caption tracks already on the timeline."""
+    """Use for listing the caption styles and the caption tracks already on the timeline. Not for adding captions (add_captions_tool)."""
     tracks = [{"timeline_clip_id": str(c.id), "captioned_clip_id": info.get("clip_id"), "style": info.get("style"),
                "role": info.get("role"), "text": info.get("text", "")[:400]} for c, info in _caption_clips()]
     styles = [{"style": key, "name": s["label"], "look": s["description"]} for key, s in cap.STYLES.items()]
@@ -682,7 +682,7 @@ def list_captions():
     covers=("caption.edit",),
 )
 def remove_captions(timeline_clip_id="", clip_query=""):
-    """Remove the captions (and any subject cut-out) of one clip, or all captions on the timeline."""
+    """Use for removing the captions (and any subject cut-out) of one clip, or all captions on the timeline. Not for deleting clips (delete_from_timeline_tool)."""
     target = None
     if str(timeline_clip_id).strip() or str(clip_query).strip():
         target = str(resolve_clip(timeline_clip_id, clip_query).id)

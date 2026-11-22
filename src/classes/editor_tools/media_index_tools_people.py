@@ -46,7 +46,8 @@ def _name_of(reg: Dict[str, Any], pid: Optional[str]) -> Optional[str]:
     read_only=True,
 )
 def people_status():
-    """Say whether people identity is on and ready: the preference, the onnxruntime package, the two models (sizes and licences) and how
+    """Use for checking whether people recognition is on and ready. Not for installing the models (run_tool(name='setup_people_tool')).
+    Say whether people identity is on and ready: the preference, the onnxruntime package, the two models (sizes and licences) and how
     much is stored. Faces and voices are matched on this computer and never uploaded; nobody is named unless the user names them.
     """
     st = pm.status()
@@ -76,7 +77,8 @@ def people_status():
     schema=obj({}),
 )
 def setup_people():
-    """Download the people models (faces about 37 MB, voices about 27 MB, one time, each checked against a fixed checksum) so people can be
+    """Use for downloading the people models (faces and voices) once, when the user asked for people recognition. Not for status (run_tool(name='people_status_tool')).
+    Download the people models (faces about 37 MB, voices about 27 MB, one time, each checked against a fixed checksum) so people can be
     recognised on this computer. Only when the user asked for people recognition: it fetches files from the internet (the models only, never any of
     their media). Needs the preference on and the onnxruntime package.
     """
@@ -119,7 +121,8 @@ def _scan_voices_one(fi) -> Dict[str, Any]:
     }),
 )
 def scan_people(file_ids=None, rescan=False):
-    """Look through indexed videos for faces and note where each person is on screen (about half a second at a time), and listen to the
+    """Use for looking through indexed videos for faces and voices. Not for naming anyone (run_tool(name='name_person_tool')).
+    Look through indexed videos for faces and note where each person is on screen (about half a second at a time), and listen to the
     speech in each file to tell the voices apart, all on this computer. Fast (a 30 s clip takes a couple of seconds). People are unnamed
     until the user names them (run_tool(name='name_person_tool')). Needs the preference on and the models (run_tool(name='people_status_tool') says what is missing);
     voices need the voice model and a transcript. It stops after about two minutes and says what is left.
@@ -177,7 +180,8 @@ def _voice_scans_for(files) -> Dict[str, Dict[str, Any]]:
     read_only=True,
 )
 def list_people(include_minor=False):
-    """The people found so far: id, the name the user gave (or none), how many files and shots they are in and for how many seconds,
+    """Use for listing the people found so far. Not for who is on screen at one moment (run_tool(name='who_is_this_tool')).
+    The people found so far: id, the name the user gave (or none), how many files and shots they are in and for how many seconds,
     most on-screen first. Unnamed people are only numbers: ask the user who they are, never guess a name.
     """
     _need_on()
@@ -232,7 +236,8 @@ def _describe_track(reg, t) -> Dict[str, Any]:
     read_only=True,
 )
 def who_is_this(file_id, seconds):
-    """Who is on screen, and who is speaking, at a moment of a file: each face found near that time and the voice heard then, with the
+    """Use for who is on screen and who is speaking at one moment of a file (speaker, who is speaking). Not for the list of everyone (run_tool(name='list_people_tool')).
+    Who is on screen, and who is speaking, at a moment of a file: each face found near that time and the voice heard then, with the
     person it matches, the name the user gave, how sure the match is, and 'unsure' with the possible person when it is not sure enough
     to say. Boxes are fractions of the frame.
     """
@@ -272,7 +277,8 @@ def who_is_this(file_id, seconds):
     }, required=["name"]),
 )
 def name_person(name, person_id="", file_id="", seconds=None, track_id="", by="face"):
-    """Give a person the name the user told you, by id or by pointing at a face at a time in a file. If that name already belongs to
+    """Use for giving a person the name the user said. Not for guessing a name: never infer one.
+    Give a person the name the user told you, by id or by pointing at a face at a time in a file. If that name already belongs to
     someone, the face is added to them (recognised as the same person) instead of making a second person. Only name someone because
     the user said who they are: never infer a name.
     """
@@ -341,7 +347,8 @@ def _name_voice(fi, seconds: float, clean: str) -> str:
     }, required=["keep", "merge"]),
 )
 def merge_people(keep, merge):
-    """Say two people are the same person: the second is folded into the first (their faces, and their name if the first has none).
+    """Use for folding a duplicate person into another (the same person shown twice). Not for a wrong face or voice (run_tool(name='fix_person_track_tool')).
+    Say two people are the same person: the second is folded into the first (their faces, and their name if the first has none).
     Use it when run_tool(name='list_people_tool') shows one person twice (a different look, angle or light).
     """
     _need_on()
@@ -366,7 +373,8 @@ def merge_people(keep, merge):
     }, required=["file_id", "person"]),
 )
 def fix_person_track(file_id, person, track_id="", speaker_id=""):
-    """Correct one face or voice that was matched to the wrong person (or that is someone new): the correction is kept and it is added
+    """Use for correcting one face or voice matched to the wrong person. Not for merging two people (run_tool(name='merge_people_tool')).
+    Correct one face or voice that was matched to the wrong person (or that is someone new): the correction is kept and it is added
     to the right person. Use it when run_tool(name='who_is_this_tool') names the wrong person.
     """
     _need_on()
@@ -401,7 +409,8 @@ def fix_person_track(file_id, person, track_id="", speaker_id=""):
     read_only=True,
 )
 def locate_person(person, for_action="", file_ids=None, limit=20):
-    """Where a person is on screen, with the face box and a rough whole-person box (estimated from the face, to be checked on a frame),
+    """Use for where a known person is on screen, with face and body boxes. Not for who is speaking at one moment (run_tool(name='who_is_this_tool')).
+    Where a person is on screen, with the face box and a rough whole-person box (estimated from the face, to be checked on a frame),
     and with for_action a ready handoff to the masking tools: 'change this person's clothes', 'blur her', 'replace him'. A possible
     (unsure) match is not included. Face boxes are exact enough to choose a frame; the body box is only a seed.
     """

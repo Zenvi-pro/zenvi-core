@@ -161,7 +161,8 @@ def _timing_receipt(clip, before_duration) -> dict:
 )
 def set_clip_speed(timeline_clip_ids=[], clip_query="", track="", scope="", speed=0.0, absolute=False,
                    target_duration_seconds=0.0, reverse=False, reset=False, ripple=False, allow_overlap=False):
-    """Speed clips up or slow them down, play them backwards, or retime them to an exact length
+    """Use for slow motion, speed up, slow down, reverse or retiming a clip to an exact length (time-lapse). Not for holding one frame (run_tool(name='freeze_frame_tool')) or looping playback (run_tool(name='repeat_clip_tool')).
+    Speed clips up or slow them down, play them backwards, or retime them to an exact length
     (Clip menu > Speed). Keyframes and the audio follow the new timing.
 
     speed combines with reverse; speed and target_duration_seconds do not.
@@ -267,7 +268,8 @@ def set_clip_speed(timeline_clip_ids=[], clip_query="", track="", scope="", spee
 )
 def repeat_clip(timeline_clip_ids=[], clip_query="", track="", scope="", times=2, pattern="loop", reverse=False,
                 delay_seconds=0.0, speed_ramp_percent=0.0, ripple=False, allow_overlap=False):
-    """Loop a clip's playback N times within one timeline clip (Clip menu > Speed > Repeat).
+    """Use for looping a clip's playback N times inside one timeline clip. Not for separate copies on the timeline (run_tool(name='duplicate_clips_tool')).
+    Loop a clip's playback N times within one timeline clip (Clip menu > Speed > Repeat).
 
     Use for "loop the beat 4 times" (times=4), "boomerang this" (pattern='ping_pong', times=3),
     "repeat it with a half-second pause" (delay_seconds=0.5), "loop it, speeding up each time"
@@ -343,7 +345,8 @@ def repeat_clip(timeline_clip_ids=[], clip_query="", track="", scope="", times=2
 )
 def freeze_frame(timeline_clip_id="", clip_query="", track="", at_seconds=-1.0, frame="at_time", hold_seconds=2.0,
                  zoom=False, ripple=False, allow_overlap=False):
-    """Hold one frame of a clip still for a few seconds, then carry on (Clip menu > Speed > Freeze).
+    """Use for holding one frame of a clip still for a few seconds, then carrying on. Not for a speed change (run_tool(name='set_clip_speed_tool')).
+    Hold one frame of a clip still for a few seconds, then carry on (Clip menu > Speed > Freeze).
 
     Use for "freeze on the last frame for 2 seconds" (frame='last'), "freeze here" (the
     playhead), "hold the frame at 12.5 s for 3 seconds with a slight zoom" (zoom=true). The
@@ -407,7 +410,8 @@ def freeze_frame(timeline_clip_id="", clip_query="", track="", at_seconds=-1.0, 
 )
 def separate_clip_audio(timeline_clip_ids=[], clip_query="", track="", scope="", per_channel=False, to_track="",
                         allow_overlap=False):
-    """Split a clip's sound onto its own audio-only clip and mute the original (Clip menu > Audio >
+    """Use for splitting a clip's sound onto its own audio-only clip. Not for changing levels (run_tool(name='set_clip_volume_tool')).
+    Split a clip's sound onto its own audio-only clip and mute the original (Clip menu > Audio >
     Separate Audio).
 
     Use for "separate the audio from the talking-head clip", "detach the sound so I can move it",
@@ -499,7 +503,8 @@ _AV = {"on": 1.0, "off": 0.0, "auto": -1.0}
     covers=("clip.enable_av", "clip.waveform"),
 )
 def set_clip_audio_video(timeline_clip_ids=[], clip_query="", track="", scope="", audio="", video="", waveform=""):
-    """Turn a clip's sound or picture on or off, or show/hide its waveform on the timeline.
+    """Use for muting a clip's sound (audio=off), or hiding its picture or waveform. Not for changing how loud it is (run_tool(name='set_clip_volume_tool')).
+    Turn a clip's sound or picture on or off, or show/hide its waveform on the timeline.
 
     Use for "mute this clip" (audio='off'), "unmute it" (audio='auto'), "make it audio only" /
     "hide the video but keep the sound" (video='off'), "show the waveform" (waveform='show').

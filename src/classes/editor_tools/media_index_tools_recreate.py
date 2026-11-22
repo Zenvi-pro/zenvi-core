@@ -156,7 +156,8 @@ def _row_line(row: Dict[str, Any], plan: Dict[str, Any]) -> str:
     read_only=True,
 )
 def plan_recreation(reference_file_id, source_file_ids=[], max_reuse=1, stock="auto", max_stock_searches=10):
-    """Plan a recreation of a reference video, every shot at once, from the project's own footage. For each reference shot it chooses a
+    """Use for planning a recreation of a reference video shot by shot, from the project's own footage (recreate, remake). Not for placing it (run_tool(name='build_recreation_tool')).
+    Plan a recreation of a reference video, every shot at once, from the project's own footage. For each reference shot it chooses a
     window of your clips (in/out seconds of exactly the shot's length) by how its picture, measured look and camera move compare, and
     hands windows out under limits: the same moment is not reused beyond max_reuse, no clip plays twice in a row, no clip takes more than
     its share. Shots nothing fits are marked weak or unfilled with a stock-search phrase and, when signed in, stock clips to try (bring one
@@ -515,7 +516,8 @@ def _ensure_track(name: str) -> None:
     background_safe=True,
 )
 def build_recreation(plan_id="", only_shots=[], overrides=[], grade=True, song=True, framing=True, ramps=True, transitions=True, skip_shots=[]):
-    """Place a recreation plan on the timeline: each source window at the reference's exact cut time and length, on a Recreation track,
+    """Use for placing a recreation plan on the timeline at the reference's cut times (recreate, remake). Not for planning (run_tool(name='plan_recreation_tool')) or scoring (run_tool(name='check_recreation_tool')).
+    Place a recreation plan on the timeline: each source window at the reference's exact cut time and length, on a Recreation track,
     in one undoable step. Each clip is graded towards its reference shot's measured look (grade), the reference's audio goes under it
     on a Song track and the footage's own sound is switched off (song). With overrides it swaps the source of the named shots; with
     only_shots it rebuilds just those, replacing their clips. skip_shots leaves those shots empty instead of filling them with a weak match.
@@ -771,7 +773,8 @@ def _grade_score(parts: List[float]) -> float:
     read_only=True,
 )
 def check_recreation(reference_file_id, plan_id="", tolerance_frames=1, show_pictures=True):
-    """Score the timeline against the reference it recreates, and say what to fix. Six areas, 0 to 100 each: timing (every cut and
+    """Use for scoring the timeline against the reference it recreates, with what to fix. Not for building it (run_tool(name='build_recreation_tool')).
+    Score the timeline against the reference it recreates, and say what to fix. Six areas, 0 to 100 each: timing (every cut and
     length against the reference's, in frames), coverage (a clip in every slot, no overlaps), variety (the same moment or clip not
     reused too often, no clip twice in a row), picture (how well each placed window ranks among the footage for its shot), look (each clip
     graded and close to the reference shot's measured look) and sound (the reference's audio present, the footage's own sound off).
