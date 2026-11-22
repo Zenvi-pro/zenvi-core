@@ -104,6 +104,16 @@ def _v2_refusal(response) -> dict:
     return {"forbidden": True, "error": message or "The media index refused this request."}
 
 
+def _payment_required(response) -> dict:
+    """A 402 from a generation route: out of credits, with the server's message and ``credits`` set."""
+    try:
+        detail = (response.json() or {}).get("detail")
+    except Exception:  # noqa: BLE001
+        detail = None
+    message = detail.get("message") if isinstance(detail, dict) else detail
+    return {"error": str(message or "Out of credits. Add credits to keep generating."), "credits": True}
+
+
 class ZenviBackendClient:
     """HTTP/WebSocket client for the Zenvi backend API."""
 
@@ -797,6 +807,8 @@ class ZenviBackendClient:
             if r.status_code == 401:
                 log.warning("Video generation rejected the login (401)")
                 return {"error": SESSION_REJECTED_MESSAGE, "auth": True}
+            if r.status_code == 402:
+                return _payment_required(r)
             r.raise_for_status()
             data = r.json()
             if not isinstance(data, dict):
@@ -898,6 +910,8 @@ class ZenviBackendClient:
                 json=payload,
                 timeout=300,
             )
+            if r.status_code == 402:
+                return {"success": False, **_payment_required(r)}
             r.raise_for_status()
             return r.json()
         except Exception as e:

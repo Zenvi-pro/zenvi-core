@@ -85,7 +85,7 @@ def test_speech_is_apportioned_to_the_shots_it_falls_in():
 class Recorder:
     """A fake transcriber: counts calls and returns a TranscriptRecord for the path it is given."""
 
-    def __init__(self, model="whisper.cpp-base-q5_1"):
+    def __init__(self, model="whistle"):
         self.calls = []
         self.model = model
 
@@ -132,29 +132,29 @@ def test_the_same_content_at_another_path_is_not_transcribed_again(tmp_path, med
 def test_a_transcript_from_the_shelf_is_handed_to_the_path_cache(tmp_path, media, monkeypatch):
     from classes.speech import asr
 
-    monkeypatch.setattr(asr, "resolve_engine", lambda engine="auto": "whisper")
-    monkeypatch.setattr(asr, "_cache_model_id", lambda engine, model_id: "whisper.cpp-base-q5_1")
-    shelf, rec = Shelf(str(tmp_path / "shelf")), Recorder("whisper.cpp-base-q5_1")
+    monkeypatch.setattr(asr, "resolve_engine", lambda engine="auto": "whistle")
+    monkeypatch.setattr(asr, "_cache_model_id", lambda engine: "whistle")
+    shelf, rec = Shelf(str(tmp_path / "shelf")), Recorder("whistle")
     sf.load_or_transcribe(media, PROBE, SHA, shelf, transcribe=rec)
     moved = tmp_path / "elsewhere" / "renamed.mov"
     moved.parent.mkdir()
     moved.write_bytes(b"x" * 64)
     cache = TranscriptCache(root=str(tmp_path / "cache"))
     sf.load_or_transcribe(str(moved), PROBE, SHA, shelf, transcribe=rec, cache=cache)
-    hit = cache.get(str(moved), model_id="whisper.cpp-base-q5_1", language="auto")
+    hit = cache.get(str(moved), model_id="whistle", language="auto")
     assert hit is not None and len(hit.words) == 8, "get_transcript for the moved file must not re-run ASR"
 
 
 def test_a_transcript_from_another_engine_is_not_forced_into_the_path_cache(tmp_path, media, monkeypatch):
     from classes.speech import asr
 
-    monkeypatch.setattr(asr, "resolve_engine", lambda engine="auto": "whisper")
-    monkeypatch.setattr(asr, "_cache_model_id", lambda engine, model_id: "whisper.cpp-base-q5_1")
+    monkeypatch.setattr(asr, "resolve_engine", lambda engine="auto": "whistle")
+    monkeypatch.setattr(asr, "_cache_model_id", lambda engine: "whistle")
     shelf = Shelf(str(tmp_path / "shelf"))
     sf.load_or_transcribe(media, PROBE, SHA, shelf, transcribe=Recorder("apple-speech-analyzer"))
     cache = TranscriptCache(root=str(tmp_path / "cache"))
     sf.load_or_transcribe(media, PROBE, SHA, shelf, transcribe=Recorder(), cache=cache)
-    assert cache.get(media, model_id="whisper.cpp-base-q5_1", language="auto") is None
+    assert cache.get(media, model_id="whistle", language="auto") is None
     assert cache.get(media, model_id="apple-speech-analyzer", language="auto") is None, "nothing from the other engine is primed"
     import os
     assert not os.path.isdir(str(tmp_path / "cache")) or os.listdir(str(tmp_path / "cache")) == []
@@ -168,7 +168,7 @@ def test_no_audio_means_no_speech_layer(tmp_path, media):
 
 def test_a_missing_engine_is_reported_not_raised(tmp_path, media):
     def boom(path, **kw):
-        raise RuntimeError("faster-whisper is not installed")
+        raise RuntimeError("the speech recogniser is not installed")
 
     shelf = Shelf(str(tmp_path / "s"))
     got = sf.load_or_transcribe(media, PROBE, SHA, shelf, transcribe=boom)
