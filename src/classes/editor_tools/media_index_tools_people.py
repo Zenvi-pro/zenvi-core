@@ -23,12 +23,18 @@ MINOR_SECONDS = 2.0
 
 
 def unavailable() -> set:
-    """These tools when onnxruntime is missing (release builds do not ship it): no agent is offered them."""
+    """The people tools that cannot work when onnxruntime is missing (release builds do not ship it): no agent is offered them.
+
+    people_status_tool says what is missing, so it stays. Scanning and its models need the runtime; the rest work from stored
+    scans, names and voices, so they stay while there are any (naming, merging, erasing).
+    """
     from classes.editor_tools._registry import REGISTRY
 
     if pm.runtime_available():
         return set()
-    return {name for name, spec in REGISTRY.items() if spec.func.__module__ == __name__}
+    if pp.has_data():
+        return {"setup_people_tool", "scan_people_tool"}
+    return {name for name, spec in REGISTRY.items() if spec.func.__module__ == __name__} - {"people_status_tool"}
 
 
 def _need_on() -> None:

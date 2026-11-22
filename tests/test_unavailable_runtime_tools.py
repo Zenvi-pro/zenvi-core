@@ -15,7 +15,7 @@ import types
 import pytest
 
 from classes.editor_tools import REGISTRY
-from classes.media_index import people_models as PM
+from classes.media_index import people as PP, people_models as PM
 from test_api_client_engine_tools import _sent
 
 PEOPLE = {"scan_people_tool", "who_is_this_tool", "name_person_tool", "setup_people_tool", "people_status_tool"}
@@ -40,10 +40,17 @@ def _found(query):
 QUERY = "recognise people: scan faces, who is this person, name them, set up people identity status"
 
 
-def test_without_onnxruntime_find_tools_offers_no_people_tool(handlers, monkeypatch):
+def test_without_onnxruntime_find_tools_offers_only_the_people_status(handlers, monkeypatch):
     monkeypatch.setattr(PM, "runtime_available", lambda: False)
-    assert not _found(QUERY) & PEOPLE
+    monkeypatch.setattr(PP, "has_data", lambda: False)
+    assert _found(QUERY) & PEOPLE == {"people_status_tool"}
     assert "generate_music_tool" in _found("generate music")
+
+
+def test_without_onnxruntime_tools_that_work_from_stored_scans_stay(handlers, monkeypatch):
+    monkeypatch.setattr(PM, "runtime_available", lambda: False)
+    monkeypatch.setattr(PP, "has_data", lambda: True)
+    assert _found(QUERY) & PEOPLE == {"people_status_tool", "who_is_this_tool", "name_person_tool"}
 
 
 def test_with_onnxruntime_find_tools_offers_the_people_tools(handlers, monkeypatch):
@@ -53,7 +60,8 @@ def test_with_onnxruntime_find_tools_offers_the_people_tools(handlers, monkeypat
 
 def test_without_onnxruntime_the_chat_tells_the_backend_the_people_tools_cannot_run(monkeypatch):
     monkeypatch.setattr(PM, "runtime_available", lambda: False)
-    assert PEOPLE <= set(_sent(monkeypatch, [])["unavailable_tools"])
+    monkeypatch.setattr(PP, "has_data", lambda: False)
+    assert PEOPLE - {"people_status_tool"} <= set(_sent(monkeypatch, [])["unavailable_tools"])
 
 
 def test_with_onnxruntime_the_chat_withholds_no_tool(monkeypatch):
