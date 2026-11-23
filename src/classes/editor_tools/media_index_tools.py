@@ -442,8 +442,8 @@ def index_status(file_ids=None, only_incomplete=False):
 )
 def index_long_file(file_ids=None, file_query="", approve=False):
     """Describe every shot of a file longer than 30 minutes. Every file is searchable without this. On this computer (the default)
-    it is free but slow; with Gemini it takes several cloud passes and uses credits. So it needs a yes (shorter files:
-    run_tool(name='describe_shots_tool')). Call with approve=false to see how many passes it takes and, with Gemini, the most
+    it is free and has no time limit, so run_tool(name='describe_shots_tool') takes a file of any length; with Gemini it takes
+    several cloud passes and uses credits, so it needs a yes (shorter files: run_tool(name='describe_shots_tool')). Call with approve=false to see how many passes it takes and, with Gemini, the most
     it can cost (a ceiling: the real charge follows what the AI used and is usually lower); ask the user; then call with
     approve=true. Each Gemini pass is charged on its own, so an interrupted run never repays what already finished.
     """
@@ -524,7 +524,7 @@ def describe_file_shots(f, fi, shot_ids):
     todo = [i for i in wanted if not by_id[i].get("watch")]
     if todo:
         seconds = cloud.upload_seconds([by_id[i] for i in todo])          # what is uploaded and billed, gaps between runs excluded
-        if longfile.is_long(seconds) and not f.data.get("index_long_ok"):
+        if not local and longfile.is_long(seconds) and not f.data.get("index_long_ok"):
             return None, "that is over 30 minutes of footage to describe: ask for a shorter range, or approve it with index_long_file_tool"
         _, _balance, blocked = (True, None, None) if local else check_operation(
             "indexing_per_minute", "shot descriptions", duration_seconds=max(1.0, seconds))

@@ -53,7 +53,6 @@ SYSTEM = {"video": "Answer questions about the video using what you see and hear
           "audio": "Answer questions about the audio.",
           "image": "Answer questions about the image."}
 MEDIA_FLAG = {"video": "--video", "audio": "--audio", "image": "--image"}
-DESCRIBE_TIMEOUT = 900
 MAX_HEIGHT = 360        # chunk height: a quarter of 720p's image tokens, about 1.8x faster; small text suffers
 # Speech comes from the editor's own recogniser (the captions' word timings), not from this model.
 _SPEECH_FIELDS = ("transcript", "transcript_en", "transcript_cues")
@@ -185,10 +184,8 @@ def describe(path: str, media_type: str, prompt: str, schema: Dict[str, Any], du
                 "--simple-io"]
         try:
             proc = subprocess.run(argv, cwd=tmp, env=_environment(), capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace", timeout=DESCRIBE_TIMEOUT,
+                                  encoding="utf-8", errors="replace",
                                   stdin=subprocess.DEVNULL, creationflags=hf._NO_WINDOW)
-        except subprocess.TimeoutExpired:
-            raise hf.HyperframesError("describing %s took longer than %d s" % (os.path.basename(path), DESCRIBE_TIMEOUT))
         except OSError as exc:
             raise hf.HyperframesError("could not start llama.cpp: %s" % exc)
     if proc.returncode != 0:

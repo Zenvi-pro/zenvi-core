@@ -54,7 +54,7 @@ def single_flight(key: str, cancelled: Callable[[], bool] = lambda: False, poll:
 class IndexingJob:
     """Index one file (or reuse a saved analysis of the same content) and report back."""
 
-    # Files longer than 30 minutes are indexed, but only described on import after a yes (index_long_file_tool).
+    # With Gemini, files longer than 30 minutes are indexed, but only described on import after a yes (index_long_file_tool).
     _MAX_INDEXING_SECONDS = 30 * 60
 
     def __init__(
@@ -247,10 +247,10 @@ class IndexingJob:
         from classes import local_describe
         from classes.credits_client import check_operation
         from classes.media_index import cloud, embedder as E, vectors
-        if duration > self._MAX_INDEXING_SECONDS and not self.file_data.get("index_long_ok"):
+        local = local_describe.enabled()          # on this computer there are no credits to check, no sign-in, no time limit
+        if not local and duration > self._MAX_INDEXING_SECONDS and not self.file_data.get("index_long_ok"):
             log.info("Not describing %s on import: over 30 minutes and not approved", file_path)
             return
-        local = local_describe.enabled()          # on this computer there are no credits to check, and no sign-in
         _, _balance, blocked = (True, None, None) if local else check_operation("indexing_per_minute", "video descriptions",
                                                                               duration_seconds=duration)
         if local and not local_describe.ready():
