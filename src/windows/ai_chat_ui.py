@@ -4625,6 +4625,8 @@ class AIChatWindow(QDockWidget):
 
     def _offer_draft(self):
         """After a turn: offer the draft if the agent edited it, else drop it."""
+        if any(sess.get("processing") for sess in self._sessions.values()):
+            return  # another turn is still editing the draft
         branch = timeline_branch.active()
         if branch is None or not branch.actionHistory:
             timeline_branch.discard()
@@ -4650,7 +4652,6 @@ class AIChatWindow(QDockWidget):
 
     def _on_response_ready(self, text: str):
         sid = getattr(self.sender(), "_session_id", self._active_sid)
-        self._offer_draft()
         if sid in self._sessions:
             self._sessions[sid]["processing"] = False
             # It answered, so it has the handoff recap: stop sending it. Not at
@@ -4676,6 +4677,7 @@ class AIChatWindow(QDockWidget):
                 self._sessions[sid].pop("cli_planning", None)
             else:
                 self._cli_plan_ready(sid)
+        self._offer_draft()
         if sid == self._active_sid:
             if self._user_cancelled:
                 self._user_cancelled = False
@@ -4755,10 +4757,10 @@ class AIChatWindow(QDockWidget):
     @pyqtSlot(str)
     def _on_error(self, text: str):
         sid = getattr(self.sender(), "_session_id", self._active_sid)
-        self._offer_draft()
         if sid in self._sessions:
             self._sessions[sid]["processing"] = False
             self._reset_turn_segments(self._sessions[sid])
+        self._offer_draft()
         if sid == self._active_sid:
             if self._user_cancelled:
                 self._user_cancelled = False

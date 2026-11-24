@@ -85,12 +85,26 @@ def _lookup(data, collection, object_id):
     return next((o for o in value or [] if isinstance(o, dict) and o.get("id") == object_id), None)
 
 
+def _comparable(obj):
+    """An object without its ``ui`` cache (waveforms land there in the background)."""
+    if isinstance(obj, dict) and "ui" in obj:
+        return {k: v for k, v in obj.items() if k != "ui"}
+    return obj
+
+
+def _refuse_file_io(*_args, **_kwargs):
+    raise RuntimeError("The assistant is working on a draft copy of the timeline. "
+                       "Apply or discard the draft before saving or opening a project.")
+
+
 class Branch:
     def __init__(self, live_store):
         self.live = live_store
         self.base = copy.deepcopy(live_store._data)
         self.store = copy.copy(live_store)
         self.store._data = copy.deepcopy(self.base)
+        # The copy shares the live file path: saving or opening from it would hit the user's project.
+        self.store.save = self.store.load = _refuse_file_io
         self.actionHistory = []
         self.redoHistory = []
         self.version = 0
@@ -126,23 +140,25 @@ class Branch:
             self._apply(UpdateAction(action.type, list(action.key or []),
                                      copy.deepcopy(action.values), transaction=action.transaction))
 
+    def _move_tail(self, source, target):
+        """Move the last transaction from *source* to *target*, in place (the undo tool holds both lists)."""
+        tid = source[-1].transaction
+        group = [a for a in source if a.transaction == tid]
+        source[:] = [a for a in source if a.transaction != tid]
+        target.extend(reversed(group))
+        return group
+
     def undo(self):
         with self._lock:
-            if not self.actionHistory:
-                return
-            tid = self.actionHistory[-1].transaction
-            group = [a for a in self.actionHistory if a.transaction == tid]
-            self.actionHistory = [a for a in self.actionHistory if a.transaction != tid]
-            self.redoHistory.append(group)
-            self._rebuild()
+            if self.actionHistory:
+                self._move_tail(self.actionHistory, self.redoHistory)
+                self._rebuild()
 
     def redo(self):
         with self._lock:
-            if not self.redoHistory:
-                return
-            for action in self.redoHistory.pop():
-                self._apply(action)
-                self.actionHistory.append(action)
+            if self.redoHistory:
+                for action in reversed(self._move_tail(self.redoHistory, self.actionHistory)):
+                    self._apply(action)
 
     def _conflicts(self, action):
         if action.type == "load":
@@ -150,11 +166,12 @@ class Branch:
         collection, object_id = _object_ref(action.key)
         if collection is None or (object_id is None and action.type == "insert"):
             return False
-        return _lookup(self.base, collection, object_id) != _lookup(self.live._data, collection, object_id)
+        return _comparable(_lookup(self.base, collection, object_id)) != _comparable(
+            _lookup(self.live._data, collection, object_id))
 
     def merge(self, updates):
         """Replay on the live project as one undo step; return the skipped actions."""
-        with bound(None):
+        with self._lock, bound(None):
             previous = updates.transaction_id
             updates.transaction_id = str(uuid.uuid4())
             try:

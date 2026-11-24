@@ -139,3 +139,41 @@ def test_opening_another_project_drops_the_branch(world):
     tb.start(store)
     app.updates.load(store._data)
     assert tb.active() is None
+
+
+def test_undo_and_redo_keep_the_stacks_the_undo_tool_holds(world):
+    app, store, _, _ = world
+    branch = tb.start(store)
+    with tb.bound(branch):
+        app.updates.transaction_id = "t1"
+        app.updates.update(["clips", {"id": "A"}], {"position": 10.0})
+        app.updates.transaction_id = "t2"
+        app.updates.update(["clips", {"id": "A"}], {"position": 20.0})
+        app.updates.transaction_id = None
+        undo_stack, redo_stack = app.updates.actionHistory, app.updates.redoHistory
+        app.updates.undo()
+        app.updates.undo()
+        assert undo_stack == [] and [a.transaction for a in redo_stack] == ["t2", "t1"]
+        assert redo_stack[-1].transaction == "t1", "flat actions, like UpdateManager"
+        app.updates.redo()
+        assert _clip(app.project, "A")["position"] == 10.0 and len(undo_stack) == 1
+
+
+def test_a_draft_cannot_be_saved_over_or_replaced_by_another_project(world, tmp_path):
+    app, store, _, _ = world
+    branch = tb.start(store)
+    with tb.bound(branch):
+        with pytest.raises(RuntimeError):
+            app.project.save(str(tmp_path / "x.zvn"))
+        with pytest.raises(RuntimeError):
+            app.project.load(str(tmp_path / "x.zvn"))
+
+
+def test_a_waveform_cache_write_is_not_a_conflict(world):
+    app, store, _, _ = world
+    branch = tb.start(store)
+    with tb.bound(branch):
+        app.updates.update(["clips", {"id": "A"}], {"position": 10.0})
+    app.updates.update_untracked(["clips", {"id": "A"}], {"ui": {"audio_data": [0.1, 0.2]}})
+    assert tb.apply_active(app.updates) == []
+    assert _clip(store, "A")["position"] == 10.0
