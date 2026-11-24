@@ -47,6 +47,8 @@ from qt_api import (
 from qt_api import QApplication, QEvent, QMessageBox, QTimer
 from qt_api import request_android_storage_permission_if_needed
 
+from classes import timeline_branch
+
 _QT_MSG_PREFIXES = {
     QtMsgType.QtDebugMsg: "debug",
     QtMsgType.QtInfoMsg: "info",
@@ -225,6 +227,9 @@ class StartupError:
 
 class OpenShotApp(QApplication):
     """The primary QApplication subclass for OpenShot."""
+
+    # An agent tool reads its run's timeline branch, everything else the live project (#426).
+    project = timeline_branch.RoutedProject()
 
     def __init__(self, *args, **kwargs):
         self.mode = kwargs.pop("mode", None)
