@@ -217,8 +217,10 @@ def harness(monkeypatch, tmp_path):
     return h
 
 
-def test_a_long_file_is_indexed_for_search_but_described_only_after_a_yes(monkeypatch, harness):
+def test_a_long_file_is_indexed_for_search_but_described_with_gemini_only_after_a_yes(monkeypatch, harness):
+    from classes import local_describe
     from classes.media_index import embedder as E
+    monkeypatch.setattr(local_describe, "enabled", lambda: False)      # on this computer there is no limit (#413)
     calls = []
     monkeypatch.setattr(cloud, "compute_cloud", lambda *a, **k: calls.append(1) or {"layers": {}})
     monkeypatch.setattr(E, "describe_on_import", lambda: True)
