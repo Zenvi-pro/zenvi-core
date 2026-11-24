@@ -177,3 +177,11 @@ def test_a_waveform_cache_write_is_not_a_conflict(world):
     app.updates.update_untracked(["clips", {"id": "A"}], {"ui": {"audio_data": [0.1, 0.2]}})
     assert tb.apply_active(app.updates) == []
     assert _clip(store, "A")["position"] == 10.0
+
+
+def test_a_new_run_takes_a_fresh_copy_when_the_pending_branch_is_empty(world):
+    app, store, _, _ = world
+    stale = tb.start(store)
+    app.updates.update(["clips", {"id": "A"}], {"position": 3.0})  # the user, between turns
+    fresh = tb.start(store)
+    assert fresh is not stale and _clip(fresh.store, "A")["position"] == 3.0

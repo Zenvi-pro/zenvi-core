@@ -38,9 +38,9 @@ def active():
 
 
 def start(live_store):
-    """Branch the live project; reuse the pending branch if there is one."""
+    """Branch the live project; reuse the pending branch if it holds edits."""
     global _active
-    if _active is None:
+    if _active is None or not _active.actionHistory:
         _active = Branch(live_store)
     return _active
 

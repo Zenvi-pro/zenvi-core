@@ -4599,7 +4599,6 @@ class AIChatWindow(QDockWidget):
                 block.append_log("RESULT:\n" + detail)
             block.complete(ok, summary)
 
-    @pyqtSlot(str)
     def _with_draft_bar(self, content):
         """*content* under a bar that offers the agent's draft edits (#426)."""
         box = QWidget()
@@ -4650,6 +4649,7 @@ class AIChatWindow(QDockWidget):
         self._draft_bar.setVisible(False)
         timeline_branch.discard()
 
+    @pyqtSlot(str)
     def _on_response_ready(self, text: str):
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         if sid in self._sessions:
@@ -4790,6 +4790,7 @@ class AIChatWindow(QDockWidget):
         if sess is not None:
             sess["processing"] = False
             self._reset_turn_segments(sess)
+            self._offer_draft()
             pending = (sess.get("last_user_text") or "").strip()
             if pending:
                 # Bind retry to this session (payload may include attachments).
