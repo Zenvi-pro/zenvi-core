@@ -329,12 +329,16 @@ def _run_on_main_thread(func, *args, timeout=None):
     # the next still collapses into a single undo step, without every handler
     # having to thread a tid through its signature.
     caller_tid = app.updates.transaction_id
+    # Same for the timeline branch an agent run edits (classes.timeline_branch).
+    from classes import timeline_branch
+    caller_branch = timeline_branch.current()
 
     def _with_caller_transaction(*a):
         previous = app.updates.transaction_id
         app.updates.transaction_id = caller_tid
         try:
-            return func(*a)
+            with timeline_branch.bound(caller_branch):
+                return func(*a)
         finally:
             app.updates.transaction_id = previous
 

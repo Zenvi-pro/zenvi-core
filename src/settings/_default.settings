@@ -1659,6 +1659,14 @@
   },
   {
     "category": "AI",
+    "title": "Assistant edits a draft copy (you apply or discard it)",
+    "setting": "agent-draft-timeline",
+    "value": true,
+    "type": "bool",
+    "restart": false
+  },
+  {
+    "category": "AI",
     "title": "Backend URL",
     "setting": "zenvi-backend-url",
     "value": "https://api.zenvi.pro",

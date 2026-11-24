@@ -21,6 +21,7 @@ from qt_api import QColor, QTextCursor
 
 from classes import assistant_turns
 from classes import background_jobs
+from classes import timeline_branch
 from classes.bridge_guard import guarded_slot
 from classes.logger import log
 from classes.api_client import get_backend_client
@@ -2527,7 +2528,7 @@ class AIChatWindow(QDockWidget):
         main.setObjectName("AIChatWindowContents")
         layout = QVBoxLayout()
         main.setLayout(layout)
-        self.setWidget(main)
+        self.setWidget(self._with_draft_bar(main))
 
         self._chat_opacity_effect = QGraphicsOpacityEffect(main)
         self._chat_opacity_effect.setOpacity(0.0)
@@ -3215,7 +3216,7 @@ class AIChatWindow(QDockWidget):
         self._chat_view.setObjectName("AIChatWindowContents")
         self._chat_view.filesDropped.connect(self._on_chat_files_dropped)
         self._chat_view.fileIdsDropped.connect(self._on_chat_file_ids_dropped)
-        self.setWidget(self._chat_view)
+        self.setWidget(self._with_draft_bar(self._chat_view))
 
         self._chat_channel = QWebChannel(self._chat_view.page())
         self._chat_channel.registerObject("zenviChatBridge", self._chat_bridge)
@@ -3277,7 +3278,7 @@ class AIChatWindow(QDockWidget):
         st.setAttribute(QWebSettings.PluginsEnabled, False)
 
         attach_webkit_window_object(self._chat_view, "zenviChatBridge", self._chat_bridge)
-        self.setWidget(self._chat_view)
+        self.setWidget(self._with_draft_bar(self._chat_view))
         self._chat_view.setHtml(html, base_url)
 
         inject_js = (
@@ -3886,6 +3887,10 @@ class AIChatWindow(QDockWidget):
         sess["cli_planning"] = planning
         worker._pending_mode = (
             ("plan" if planning else getattr(self, "_cli_mode", "") or "") if is_cli else "")
+        if get_app().get_settings().get("agent-draft-timeline"):
+            busy = any(other.get("processing") for other in self._sessions.values())
+            timeline_branch.start(get_app().project, refresh_empty=not busy)
+            self._draft_bar.setVisible(False)
         self._set_processing_ui(True)
         QMetaObject.invokeMethod(
             worker,
@@ -4595,6 +4600,56 @@ class AIChatWindow(QDockWidget):
                 block.append_log("RESULT:\n" + detail)
             block.complete(ok, summary)
 
+    def _with_draft_bar(self, content):
+        """*content* under a bar that offers the agent's draft edits (#426)."""
+        box = QWidget()
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+        self._draft_bar = QFrame()
+        self._draft_bar.setObjectName("draftBar")
+        h = QHBoxLayout(self._draft_bar)
+        self._draft_label = QLabel()
+        self._draft_label.setWordWrap(True)
+        apply_btn = QPushButton("Apply")
+        apply_btn.clicked.connect(self._apply_draft)
+        discard_btn = QPushButton("Discard")
+        discard_btn.clicked.connect(self._discard_draft)
+        h.addWidget(self._draft_label, 1)
+        h.addWidget(apply_btn)
+        h.addWidget(discard_btn)
+        self._draft_bar.setVisible(False)
+        v.addWidget(self._draft_bar)
+        v.addWidget(content, 1)
+        return box
+
+    def _offer_draft(self):
+        """After a turn: offer the draft if the agent edited it, else drop it."""
+        if any(sess.get("processing") for sess in self._sessions.values()):
+            return  # another turn is still editing the draft
+        branch = timeline_branch.active()
+        if branch is None or not branch.actionHistory:
+            timeline_branch.discard()
+            return
+        steps = len({a.transaction for a in branch.actionHistory})
+        self._draft_label.setText(
+            "The assistant made %d change%s on a draft copy. Your timeline is unchanged until you apply them."
+            % (steps, "" if steps == 1 else "s"))
+        self._draft_bar.setVisible(True)
+
+    def _apply_draft(self):
+        self._draft_bar.setVisible(False)
+        skipped = timeline_branch.apply_active(get_app().updates)
+        if skipped:
+            QMessageBox.information(
+                self, "Some changes were skipped",
+                "%d of the assistant's edits touched clips or tracks you changed meanwhile. "
+                "Your edits were kept and those were skipped." % len(skipped))
+
+    def _discard_draft(self):
+        self._draft_bar.setVisible(False)
+        timeline_branch.discard()
+
     @pyqtSlot(str)
     def _on_response_ready(self, text: str):
         sid = getattr(self.sender(), "_session_id", self._active_sid)
@@ -4623,6 +4678,7 @@ class AIChatWindow(QDockWidget):
                 self._sessions[sid].pop("cli_planning", None)
             else:
                 self._cli_plan_ready(sid)
+        self._offer_draft()
         if sid == self._active_sid:
             if self._user_cancelled:
                 self._user_cancelled = False
@@ -4705,6 +4761,7 @@ class AIChatWindow(QDockWidget):
         if sid in self._sessions:
             self._sessions[sid]["processing"] = False
             self._reset_turn_segments(self._sessions[sid])
+        self._offer_draft()
         if sid == self._active_sid:
             if self._user_cancelled:
                 self._user_cancelled = False
@@ -4734,6 +4791,7 @@ class AIChatWindow(QDockWidget):
         if sess is not None:
             sess["processing"] = False
             self._reset_turn_segments(sess)
+            self._offer_draft()
             pending = (sess.get("last_user_text") or "").strip()
             if pending:
                 # Bind retry to this session (payload may include attachments).

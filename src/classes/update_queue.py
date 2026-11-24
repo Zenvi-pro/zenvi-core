@@ -13,6 +13,7 @@ queued ``load`` actions into ``UpdateManager.load()``.
 
 from collections import deque
 
+from classes import timeline_branch
 from classes.logger import log
 
 try:
@@ -133,6 +134,8 @@ class UpdatesRouter:
 
     def insert(self, key, values):
         from classes.updates import UpdateAction
+        if self._branch_records("insert", key, values):
+            return
         if self._queue.from_agent:
             self._queue.enqueue(
                 UpdateAction("insert", key, values,
@@ -142,6 +145,8 @@ class UpdatesRouter:
 
     def update(self, key, values):
         from classes.updates import UpdateAction
+        if self._branch_records("update", key, values):
+            return
         if self._queue.from_agent:
             self._queue.enqueue(
                 UpdateAction("update", key, values,
@@ -151,6 +156,8 @@ class UpdatesRouter:
 
     def delete(self, key):
         from classes.updates import UpdateAction
+        if self._branch_records("delete", key, None):
+            return
         if self._queue.from_agent:
             self._queue.enqueue(
                 UpdateAction("delete", key,
@@ -160,10 +167,27 @@ class UpdatesRouter:
 
     def load(self, values, reset_history=True):
         from classes.updates import UpdateAction
+        if self._branch_records("load", "", values):
+            return
+        if reset_history:
+            # Another project is opening: the pending branch belongs to the old one.
+            timeline_branch.discard()
         if self._queue.from_agent:
             self._queue.enqueue(UpdateAction("load", "", values))
             return
         self._updates.load(values, reset_history=reset_history)
 
+    def _branch_records(self, action_type, key, values):
+        """On a thread bound to a timeline branch, the edit goes to the branch."""
+        branch = timeline_branch.current()
+        if branch is None:
+            return False
+        from classes.updates import UpdateAction
+        branch.record(UpdateAction(action_type, key, values, transaction=self._updates.transaction_id))
+        return True
+
+    _BRANCH_STATE = ("actionHistory", "redoHistory", "undo", "redo", "data_version")
+
     def __getattr__(self, name):
-        return getattr(self._updates, name)
+        branch = timeline_branch.current() if name in self._BRANCH_STATE else None
+        return getattr(branch if branch is not None else self._updates, name)

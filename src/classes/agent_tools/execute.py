@@ -164,8 +164,12 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
     if transaction_id is not None:
         public_args["transaction_id"] = transaction_id
 
+    from classes import timeline_branch
+    branch = timeline_branch.active()  # during an agent run, the tool edits its branch (#426)
+
     def _invoke() -> ToolOutput:
-        out = _invoke_inner()
+        with timeline_branch.bound(branch):
+            out = _invoke_inner()
         attached = take_attached_images()
         if attached and not out.images:
             out = ToolOutput(receipt=out.receipt, images=attached)

@@ -291,6 +291,7 @@ def _chat_window(chat_ui, *, active_sid, reply_sid):
         _use_web_ui = True
         _user_cancelled = False
         _on_response_ready = W._on_response_ready
+        _offer_draft = W._offer_draft
         _final_segment_text = W._final_segment_text
         _reset_turn_segments = staticmethod(W._reset_turn_segments)
         _strip_thinking = staticmethod(W._strip_thinking)
