@@ -413,15 +413,14 @@ def test_cancelling_kills_a_running_describe(home, monkeypatch, tmp_path):
                 raise ld.subprocess.TimeoutExpired("llama", timeout)
             return -9
 
-        def kill(self):
-            killed.append(1)
-
+    from classes import dubbing_runtime
     monkeypatch.setattr(ld.subprocess, "Popen", Stuck)
+    monkeypatch.setattr(dubbing_runtime, "_kill_tree", lambda proc: killed.append(proc))   # llama and any child it started
     clip = tmp_path / "chunk.mp4"
     clip.write_bytes(b"x")
     with pytest.raises(hf.HyperframesError):
         ld.describe(str(clip), "video", "Describe.", {"type": "object", "properties": {}}, should_cancel=lambda: True)
-    assert killed == [1]
+    assert len(killed) == 1 and isinstance(killed[0], Stuck)
 
 
 def test_the_provider_picked_when_describing_starts_holds_for_the_whole_file(monkeypatch, tmp_path):

@@ -188,14 +188,15 @@ def _run(argv, should_cancel=None, cwd=None, env=None):
     names = [os.path.join(cwd, n) for n in ("out.txt", "err.txt")]
     with open(names[0], "wb") as out, open(names[1], "wb") as err:
         proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=out, stderr=err, stdin=subprocess.DEVNULL,
-                                creationflags=hf._NO_WINDOW)
+                                creationflags=hf._NO_WINDOW, start_new_session=sys.platform != "win32")
         while True:
             try:
                 proc.wait(timeout=1)
                 break
             except subprocess.TimeoutExpired:
                 if should_cancel and should_cancel():
-                    proc.kill()
+                    from classes.dubbing_runtime import _kill_tree
+                    _kill_tree(proc)            # llama and any child it started
                     proc.wait()
                     raise hf.HyperframesError("describing was cancelled")
     text = []
