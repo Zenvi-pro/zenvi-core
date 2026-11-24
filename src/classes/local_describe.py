@@ -12,6 +12,8 @@ keep one ``llama serve`` up for the whole job if that ever dominates indexing ti
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import os
 import platform as _platform
@@ -22,6 +24,7 @@ import tarfile
 import tempfile
 import threading
 import zipfile
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from classes import hyperframes_local as hf
@@ -60,8 +63,23 @@ _EXE = "llama.exe" if sys.platform == "win32" else "llama"
 _install_lock = threading.Lock()       # two index workers may both be the first
 
 
+_PINNED: contextvars.ContextVar = contextvars.ContextVar("local_describe_pinned", default=None)
+
+
+@contextlib.contextmanager
+def pinned(local: bool):
+    """Keep enabled() at *local* for one job, so a Preferences change mid-file cannot skip Gemini's checks."""
+    token = _PINNED.set(local)
+    try:
+        yield
+    finally:
+        _PINNED.reset(token)
+
+
 def enabled() -> bool:
     """The AI setting: this computer unless Gemini was picked (and with no editor running)."""
+    if _PINNED.get() is not None:
+        return _PINNED.get()
     try:
         from classes.app import get_app
         return get_app().get_settings().get("index-describe") != "gemini"
@@ -164,7 +182,31 @@ def _json_answer(text: str) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def describe(path: str, media_type: str, prompt: str, schema: Dict[str, Any], duration: float = 0.0) -> Dict[str, Any]:
+def _run(argv, should_cancel=None, cwd=None, env=None):
+    """llama.cpp with no time limit (a slow computer finishes), killed once the job is cancelled or the editor quits.
+    Output goes to files, not pipes: a child of llama that outlives it would hold a pipe open."""
+    names = [os.path.join(cwd, n) for n in ("out.txt", "err.txt")]
+    with open(names[0], "wb") as out, open(names[1], "wb") as err:
+        proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=out, stderr=err, stdin=subprocess.DEVNULL,
+                                creationflags=hf._NO_WINDOW)
+        while True:
+            try:
+                proc.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                if should_cancel and should_cancel():
+                    proc.kill()
+                    proc.wait()
+                    raise hf.HyperframesError("describing was cancelled")
+    text = []
+    for name in names:
+        with open(name, encoding="utf-8", errors="replace") as f:      # text mode: CRLF becomes LF
+            text.append(f.read())
+    return SimpleNamespace(returncode=proc.returncode, stdout=text[0], stderr=text[1])
+
+
+def describe(path: str, media_type: str, prompt: str, schema: Dict[str, Any], duration: float = 0.0,
+             should_cancel: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
     """Describe one chunk; returns the model's JSON in the backend's schema."""
     mt = media_type if media_type in MEDIA_FLAG else "video"
     schema = dict(schema or {})
@@ -183,9 +225,7 @@ def describe(path: str, media_type: str, prompt: str, schema: Dict[str, Any], du
                 # pipe whenever Zenvi has one (run.sh, a terminal launch): every description came back empty.
                 "--simple-io"]
         try:
-            proc = subprocess.run(argv, cwd=tmp, env=_environment(), capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace",
-                                  stdin=subprocess.DEVNULL, creationflags=hf._NO_WINDOW)
+            proc = _run(argv, should_cancel, cwd=tmp, env=_environment())
         except OSError as exc:
             raise hf.HyperframesError("could not start llama.cpp: %s" % exc)
     if proc.returncode != 0:

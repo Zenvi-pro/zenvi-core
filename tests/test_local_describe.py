@@ -89,7 +89,7 @@ def test_describe_asks_the_model_with_the_backend_prompt_and_schema(home, monkey
     answer = {"short_summary": "A dog on a beach.", "visual": "dog", "sounds": "surf", "chapters": [],
               "transcript_cues": [], "moments": []}
 
-    def run(argv, **kwargs):
+    def run(argv, *a, **kwargs):
         seen["argv"] = argv
         seen["prompt"] = argv[argv.index("-p") + 1]
         seen["env"] = kwargs.get("env") or {}
@@ -97,7 +97,7 @@ def test_describe_asks_the_model_with_the_backend_prompt_and_schema(home, monkey
         return SimpleNamespace(returncode=0, stdout="> " + seen["prompt"] + "\n\n" + json.dumps(answer) + "\n",
                                stderr="log")
 
-    monkeypatch.setattr(ld.subprocess, "run", run)
+    monkeypatch.setattr(ld, "_run", run)
     clip = tmp_path / "chunk.mp4"
     clip.write_bytes(b"x")
     schema = {"type": "object", "properties": {"short_summary": {"type": "string"}}}
@@ -120,10 +120,10 @@ def test_a_failed_or_unparseable_answer_is_an_error(home, monkeypatch, tmp_path)
     ld.install()
     clip = tmp_path / "chunk.mp4"
     clip.write_bytes(b"x")
-    monkeypatch.setattr(ld.subprocess, "run", lambda argv, **k: SimpleNamespace(returncode=1, stdout="", stderr="no"))
+    monkeypatch.setattr(ld, "_run", lambda argv, *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="no"))
     with pytest.raises(hf.HyperframesError):
         ld.describe(str(clip), "video", "p", {})
-    monkeypatch.setattr(ld.subprocess, "run", lambda argv, **k: SimpleNamespace(returncode=0, stdout="sorry", stderr=""))
+    monkeypatch.setattr(ld, "_run", lambda argv, *a, **k: SimpleNamespace(returncode=0, stdout="sorry", stderr=""))
     with pytest.raises(hf.HyperframesError):
         ld.describe(str(clip), "video", "p", {})
 
@@ -132,7 +132,7 @@ def test_the_model_is_not_asked_to_transcribe(home, monkeypatch, tmp_path):
     _fake_downloads(monkeypatch)
     ld.install()
     seen = {}
-    monkeypatch.setattr(ld.subprocess, "run", lambda argv, **k: seen.update(prompt=argv[argv.index("-p") + 1])
+    monkeypatch.setattr(ld, "_run", lambda argv, *a, **k: seen.update(prompt=argv[argv.index("-p") + 1])
                         or SimpleNamespace(returncode=0, stdout='{"visual": "x"}', stderr=""))
     clip = tmp_path / "chunk.mp4"
     clip.write_bytes(b"x")
@@ -169,7 +169,7 @@ def _model(monkeypatch, clips, shots, fail_on=(), events=None):
     """Stand in for LFM3-Omni: answers for the shots inside the clip it is shown, and fails when one of them is in fail_on."""
     calls = []
 
-    def describe(clip, media_type, prompt, schema, duration=0.0):
+    def describe(clip, media_type, prompt, schema, duration=0.0, should_cancel=None):
         span = clips[clip]
         inside = [s for s in shots if span["start"] <= s["start"] and s["end"] <= span["end"]]
         calls.append({"prompt": prompt, "schema": schema, "duration": duration, "media_type": media_type})
@@ -386,12 +386,59 @@ def test_a_slow_computer_is_never_cut_off_mid_describe(home, monkeypatch, tmp_pa
     ld.install()
     seen = {}
 
-    def run(argv, **kwargs):
+    def run(argv, *a, **kwargs):
         seen.update(kwargs)
         return SimpleNamespace(returncode=0, stdout='{"short_summary": "ok"}', stderr="")
 
-    monkeypatch.setattr(ld.subprocess, "run", run)
+    monkeypatch.setattr(ld, "_run", run)
     clip = tmp_path / "chunk.mp4"
     clip.write_bytes(b"x")
     ld.describe(str(clip), "video", "Describe.", {"type": "object", "properties": {}})
     assert seen.get("timeout") is None
+
+
+def test_cancelling_kills_a_running_describe(home, monkeypatch, tmp_path):
+    _fake_downloads(monkeypatch)
+    ld.install()
+    killed = []
+
+    class Stuck:
+        returncode = None
+
+        def __init__(self, argv, **kw):
+            pass
+
+        def wait(self, timeout=None):
+            if timeout is not None and not killed:
+                raise ld.subprocess.TimeoutExpired("llama", timeout)
+            return -9
+
+        def kill(self):
+            killed.append(1)
+
+    monkeypatch.setattr(ld.subprocess, "Popen", Stuck)
+    clip = tmp_path / "chunk.mp4"
+    clip.write_bytes(b"x")
+    with pytest.raises(hf.HyperframesError):
+        ld.describe(str(clip), "video", "Describe.", {"type": "object", "properties": {}}, should_cancel=lambda: True)
+    assert killed == [1]
+
+
+def test_the_provider_picked_when_describing_starts_holds_for_the_whole_file(monkeypatch, tmp_path):
+    h = Harness(monkeypatch, tmp_path, signed_in=True)
+    _stub_vectors(monkeypatch, h)
+    settings = {"index-describe": "local"}
+    monkeypatch.setattr("classes.app.get_app", lambda: SimpleNamespace(get_settings=lambda: SimpleNamespace(get=settings.get)))
+    monkeypatch.setattr(E, "describe_on_import", lambda: True)
+    monkeypatch.setattr(ld, "ready", lambda: True)
+    seen = []
+
+    def compute(*a, **k):
+        settings["index-describe"] = "gemini"           # Preferences changed mid-import
+        seen.append(ld.enabled())
+        return {"layers": {}}
+
+    monkeypatch.setattr(cloud, "compute_cloud", compute)
+    h.run(duration=2 * 3600.0)
+    assert seen == [True]                                # still on this computer: no unapproved Gemini upload
+    assert ld.enabled() is False                         # the pin ends with the job

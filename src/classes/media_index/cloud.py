@@ -347,12 +347,14 @@ def _describe_here(path: str, probe: Dict[str, Any], shots: List[Dict[str, Any]]
                 if not ok:
                     raise RuntimeError("could not make the clip: %s" % err)
                 found = _local_answers(local_describe.describe(clip, "video", _local_prompt(members, start), LOCAL_SCHEMA,
-                                                               duration=end - start), members)
+                                                               duration=end - start, should_cancel=should_cancel), members)
                 answers.update((i, raw) for i, raw in found.items() if i in ids)
                 clip_starts.update((i, start) for i in ids)
             except Exception as exc:         # this clip's shots are missing; the rest of the file is kept
                 log.warning("describing shots %s on this computer failed: %s", sorted(ids), exc)
                 errors.append(str(exc))
+            if should_cancel and should_cancel():
+                raise Cancelled()
             if on_progress:
                 on_progress((n + 1) / len(groups))
     if not answers:
