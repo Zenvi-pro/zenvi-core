@@ -185,3 +185,9 @@ def test_a_new_run_takes_a_fresh_copy_when_the_pending_branch_is_empty(world):
     app.updates.update(["clips", {"id": "A"}], {"position": 3.0})  # the user, between turns
     fresh = tb.start(store)
     assert fresh is not stale and _clip(fresh.store, "A")["position"] == 3.0
+
+
+def test_an_empty_branch_another_run_is_using_is_kept(world):
+    _, store, _, _ = world
+    in_use = tb.start(store)
+    assert tb.start(store, refresh_empty=False) is in_use

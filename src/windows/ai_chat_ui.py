@@ -3888,7 +3888,8 @@ class AIChatWindow(QDockWidget):
         worker._pending_mode = (
             ("plan" if planning else getattr(self, "_cli_mode", "") or "") if is_cli else "")
         if get_app().get_settings().get("agent-draft-timeline"):
-            timeline_branch.start(get_app().project)
+            busy = any(other.get("processing") for other in self._sessions.values())
+            timeline_branch.start(get_app().project, refresh_empty=not busy)
             self._draft_bar.setVisible(False)
         self._set_processing_ui(True)
         QMetaObject.invokeMethod(

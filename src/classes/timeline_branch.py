@@ -37,10 +37,13 @@ def active():
     return _active
 
 
-def start(live_store):
-    """Branch the live project; reuse the pending branch if it holds edits."""
+def start(live_store, refresh_empty=True):
+    """Branch the live project; reuse the pending branch if it holds edits.
+
+    Pass ``refresh_empty=False`` while another run may still hold the branch.
+    """
     global _active
-    if _active is None or not _active.actionHistory:
+    if _active is None or (refresh_empty and not _active.actionHistory):
         _active = Branch(live_store)
     return _active
 
